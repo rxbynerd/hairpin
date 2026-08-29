@@ -52,11 +52,18 @@ func LoadProfiles(dir, defaultProfile string) (*Profiles, error) {
 	return NewProfiles(templates, defaultProfile)
 }
 
-// NewProfiles builds a profile set from in-memory templates.
+// NewProfiles builds a profile set from in-memory templates. A default
+// name is only meaningful — and only validated — when templates exist:
+// an empty set ignores it, so a profile-less server can keep the CLI's
+// default-profile flag value and serve run_config_json submits.
 func NewProfiles(templates map[string]*harnessv1.RunConfig, defaultProfile string) (*Profiles, error) {
 	p := &Profiles{templates: make(map[string]*harnessv1.RunConfig, len(templates)), def: defaultProfile}
 	for name, cfg := range templates {
 		p.templates[name] = cfg
+	}
+	if len(p.templates) == 0 {
+		p.def = ""
+		return p, nil
 	}
 	if defaultProfile != "" {
 		if _, ok := p.templates[defaultProfile]; !ok {
