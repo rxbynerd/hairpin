@@ -1,0 +1,6 @@
+.git
+/hairpin
+*.test
+.env*
+docs
+examples
