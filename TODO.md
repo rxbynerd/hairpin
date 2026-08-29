@@ -29,7 +29,27 @@ current: check items off as they land, add discoveries.
 - [x] code-reviewer findings triaged: its CRITICAL ("success" is not a stop_reason) was a FALSE POSITIVE — verified against stirrup source (loop.go emits done.StopReason=outcome, happy path literally "success"); all real findings fixed in 63c9f51
 - [x] security-reviewer findings fixed (63c9f51): per-job harness session tokens (SubmitJobResponse.harness_session = "<id>.<token>" via CONTROL_PLANE_SESSION_ID), executor.type now required at submit, pod hardening, 4MiB read caps, permission cap, SSE type demotion, same-origin+headers on UI, shutdown cancels live runs, AnswerPermission persist-first, id format validation
 - [x] docs agent: README, docs/api.md, docs/deployment.md written; second pass updating for the fix wave in flight
-- [ ] Commit docs pass; final full-suite run; consider verifier re-run against fixed build
+- [x] Commit docs pass; final full-suite run
+
+## Wave 4 — Kubernetes-native deployment (done, 516a0a6 + 20ab574)
+- [x] Dropped the process launcher (`--stirrup-bin` path-to-binary); launcher is
+      `kubernetes` (default) or `none`. `k8s-` flag prefix gone.
+- [x] Images defaulted to the published ghcr.io/rxbynerd/stirrup and
+      stirrup-sandbox tags; namespace read from the projected ServiceAccount;
+      `--advertise` defaults to hairpin.<ns>.svc:<port>. In-cluster hairpin needs
+      no flags beyond --redis/--profiles/identities.
+- [x] Harness Job now mounts its ServiceAccount token (was pinned false, which
+      would have failed every sandboxed run at executor construction).
+- [x] hairpin owns sandbox coordinates: `--sandbox-image/-namespace/-service-account/-runtime`
+      are injected into each submitted RunConfig's k8s/k8s-sandbox executor;
+      stirrup's cross-field rules mirrored at submit.
+- [x] examples/k8s: two namespaces (hairpin + hairpin-sandboxes), three
+      identities, profiles ConfigMap. Containerfile USER made numeric (65532) —
+      runAsNonRoot rejects a non-numeric image user.
+- [x] scripts/dev: kind-up/deploy/smoke-test/kind-down + a fake OpenAI-SSE
+      provider. VERIFIED end to end on kind+podman: harness Job → sandbox Pod +
+      NetworkPolicy in hairpin-sandboxes → run_command via pods/exec as uid
+      65532 → SUCCEEDED, both torn down at end of run.
 
 ## Known deferrals (see docs/design.md "Deliberately deferred")
 Follow-ups, sandbox tokens (explicit refusal), batch, multi-replica, auth.
@@ -38,11 +58,15 @@ Follow-ups, sandbox tokens (explicit refusal), batch, multi-replica, auth.
 - Job/event retention: no TTL/reaper exists — event streams are count-capped
   (MAXLEN ~10000) but job hashes/permissions/index grow forever. Documented
   honestly in docs/deployment.md; needs a real reaper or key TTLs.
-- examples/k8s manifests unverified against a live cluster (local kind+podman
-  integration broken); smoke-test before relying on them.
+- gVisor RuntimeClass untested: the kind cluster installs none, so
+  `--sandbox-runtime gvisor` is unexercised. stirrup's scripts/dev/kind-up.sh
+  installs runsc if that path needs proving.
 - Reaper for jobs stuck in awaiting_harness (pod never dialled back).
 
 ## Notes for future sessions
 - stirrup checkout: ~/Developer/stirrup (built arm64 binary at repo root)
 - Correlation: CONTROL_PLANE_SESSION_ID env → echoed in ready.id
+- `kind get clusters` fails on this podman (Go template over .Labels); the dev
+  scripts check for the `<cluster>-control-plane` container instead. `kind create`
+  and `kind load image-archive` work fine with KIND_EXPERIMENTAL_PROVIDER=podman.
 - Wire RunConfig needs explicit run_id/mode/prompt/provider.type/max_turns/timeout (+permission_policy for execution; +tools.built_in for read-only modes) — no CLI defaults on the wire
