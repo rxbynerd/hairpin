@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,37 +44,56 @@ func run(args []string) error {
 
 func parseServeFlags(args []string) (*config.Config, error) {
 	cfg := &config.Config{}
+	namespace := config.DetectNamespace()
+
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.StringVar(&cfg.ListenAddr, "listen", ":8130", "h2c listen address (API, control plane, web UI)")
-	fs.StringVar(&cfg.AdvertiseAddr, "advertise", "", "address harnesses dial back into (CONTROL_PLANE_ADDR)")
+	fs.StringVar(&cfg.AdvertiseAddr, "advertise", "", "address harnesses dial back into (CONTROL_PLANE_ADDR); defaults to hairpin.<namespace>.svc:8130 in-cluster")
 	fs.StringVar(&cfg.RedisAddr, "redis", "", "Redis address host:port (empty: in-memory store, dev only)")
 	fs.StringVar(&cfg.RedisPassword, "redis-password", "", "Redis password")
 	fs.IntVar(&cfg.RedisDB, "redis-db", 0, "Redis database number")
-	fs.StringVar(&cfg.Launcher, "launcher", "none", "harness launcher: k8s, process, or none")
+	fs.StringVar(&cfg.Launcher, "launcher", "kubernetes", "harness launcher: kubernetes or none")
 	fs.StringVar(&cfg.ProfilesDir, "profiles", "", "directory of RunConfig profile templates (<name>.json)")
 	fs.StringVar(&cfg.DefaultProfile, "default-profile", "default", "profile used when a submit names none")
-	fs.StringVar(&cfg.Process.StirrupBin, "stirrup-bin", "", "process launcher: path to the stirrup binary")
-	fs.StringVar(&cfg.Process.WorkDir, "stirrup-workdir", "", "process launcher: harness working directory (empty: per-job temp dir)")
-	fs.BoolVar(&cfg.Process.InheritEnv, "stirrup-inherit-env", true, "process launcher: pass hairpin's environment to the harness")
-	fs.StringVar(&cfg.K8s.Namespace, "k8s-namespace", "", "k8s launcher: namespace for harness Jobs")
-	fs.StringVar(&cfg.K8s.Image, "k8s-image", "", "k8s launcher: stirrup container image")
-	fs.StringVar(&cfg.K8s.Kubeconfig, "k8s-kubeconfig", "", "k8s launcher: kubeconfig path (empty: in-cluster, then $KUBECONFIG)")
-	fs.StringVar(&cfg.K8s.ServiceAccount, "k8s-service-account", "", "k8s launcher: ServiceAccount for harness Pods")
-	envFromSecrets := fs.String("k8s-env-from-secrets", "", "k8s launcher: comma-separated Secret names exposed to harness Pods via envFrom")
-	ttl := fs.Int("k8s-job-ttl", 3600, "k8s launcher: Job ttlSecondsAfterFinished")
-	slack := fs.Duration("k8s-deadline-slack", 10*time.Minute, "k8s launcher: slack added to RunConfig timeout for Job activeDeadlineSeconds")
+
+	fs.StringVar(&cfg.Harness.Namespace, "namespace", namespace, "namespace harness Jobs are created in")
+	fs.StringVar(&cfg.Harness.Image, "harness-image", config.DefaultHarnessImage, "stirrup harness image run as the Job")
+	fs.StringVar(&cfg.Harness.ServiceAccount, "harness-service-account", "", "ServiceAccount for harness Pods; its token is mounted so the sandbox executor can reach the API")
+	fs.StringVar(&cfg.Harness.Kubeconfig, "kubeconfig", "", "kubeconfig path (empty: in-cluster, then $KUBECONFIG)")
+	secrets := fs.String("harness-secrets", "", "comma-separated Secret names exposed to harness Pods via envFrom")
+	ttl := fs.Int("job-ttl", 3600, "ttlSecondsAfterFinished on created harness Jobs")
+	slack := fs.Duration("deadline-slack", 10*time.Minute, "slack added to the RunConfig timeout for Job activeDeadlineSeconds")
+
+	fs.StringVar(&cfg.Sandbox.Image, "sandbox-image", config.DefaultSandboxImage, "image sandbox Pods run; must ship a shell, tar, ls, and mkdir")
+	fs.StringVar(&cfg.Sandbox.Namespace, "sandbox-namespace", "", "namespace sandbox Pods are created in (empty: --namespace)")
+	fs.StringVar(&cfg.Sandbox.ServiceAccount, "sandbox-service-account", "", "ServiceAccount for sandbox Pods; its token is never mounted")
+	fs.StringVar(&cfg.Sandbox.Runtime, "sandbox-runtime", "", "RuntimeClassName for sandbox Pods: runc, gvisor, kata-qemu, kata-fc, kata-clh (empty: cluster default)")
+
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
-	if *envFromSecrets != "" {
-		cfg.K8s.EnvFromSecrets = splitComma(*envFromSecrets)
+	if *secrets != "" {
+		cfg.Harness.EnvFromSecrets = splitComma(*secrets)
 	}
-	cfg.K8s.TTLSecondsAfterFinished = int32(*ttl)
-	cfg.K8s.ActiveDeadlineSlack = *slack
+	cfg.Harness.TTLSecondsAfterFinished = int32(*ttl)
+	cfg.Harness.ActiveDeadlineSlack = *slack
+	if cfg.AdvertiseAddr == "" && cfg.Harness.Namespace != "" {
+		cfg.AdvertiseAddr = defaultAdvertiseAddr(cfg.Harness.Namespace, cfg.ListenAddr)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// defaultAdvertiseAddr names the in-cluster Service the reference
+// manifests create, on the port hairpin listens on.
+func defaultAdvertiseAddr(namespace, listenAddr string) string {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" {
+		return ""
+	}
+	return fmt.Sprintf("hairpin.%s.svc:%s", namespace, port)
 }
 
 func splitComma(s string) []string {
@@ -111,7 +131,7 @@ func serve(cfg *config.Config) error {
 	}
 
 	reg := registry.New()
-	svc := service.New(st, reg, l, profiles, logger)
+	svc := service.New(st, reg, l, profiles, logger, service.WithExecutorDefaults(cfg.Sandbox))
 
 	mux := http.NewServeMux()
 	cpPath, cpHandler := controlplane.New(st, reg, controlplane.WithLogger(logger)).NewHTTPHandler()
@@ -195,10 +215,8 @@ func buildStore(cfg *config.Config, logger *slog.Logger) (store.Store, error) {
 
 func buildLauncher(cfg *config.Config, logger *slog.Logger) (launcher.Launcher, error) {
 	switch cfg.Launcher {
-	case "k8s":
-		return launcher.NewK8s(cfg.K8s, cfg.AdvertiseAddr, logger)
-	case "process":
-		return launcher.NewProcess(cfg.Process, cfg.AdvertiseAddr, logger), nil
+	case "kubernetes":
+		return launcher.NewK8s(cfg.Harness, cfg.AdvertiseAddr, logger)
 	default:
 		logger.Warn("launcher disabled; harnesses must be started out-of-band with CONTROL_PLANE_SESSION_ID set to the job ID")
 		return launcher.None{}, nil

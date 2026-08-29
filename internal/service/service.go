@@ -15,6 +15,7 @@ import (
 	"time"
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
+	"github.com/rxbynerd/hairpin/internal/config"
 	"github.com/rxbynerd/hairpin/internal/job"
 	"github.com/rxbynerd/hairpin/internal/launcher"
 	"github.com/rxbynerd/hairpin/internal/registry"
@@ -44,26 +45,36 @@ const defaultLaunchTimeout = 60 * time.Second
 
 // Service performs hairpin's caller-facing job operations.
 type Service struct {
-	store    store.Store
-	registry *registry.Registry
-	launcher launcher.Launcher
-	profiles *Profiles
-	log      *slog.Logger
+	store            store.Store
+	registry         *registry.Registry
+	launcher         launcher.Launcher
+	profiles         *Profiles
+	executorDefaults config.ExecutorDefaults
+	log              *slog.Logger
 
 	launchTimeout time.Duration
 	launches      sync.WaitGroup
 }
 
+// Option adjusts a Service at construction.
+type Option func(*Service)
+
+// WithExecutorDefaults supplies the cluster coordinates a submitted
+// RunConfig's sandbox executor inherits when it names none of its own.
+func WithExecutorDefaults(d config.ExecutorDefaults) Option {
+	return func(s *Service) { s.executorDefaults = d }
+}
+
 // New returns a Service. A nil logger discards output; a nil profiles
 // set means every submit must carry its own run_config_json.
-func New(st store.Store, reg *registry.Registry, l launcher.Launcher, profiles *Profiles, logger *slog.Logger) *Service {
+func New(st store.Store, reg *registry.Registry, l launcher.Launcher, profiles *Profiles, logger *slog.Logger, opts ...Option) *Service {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	if profiles == nil {
 		profiles = &Profiles{}
 	}
-	return &Service{
+	s := &Service{
 		store:         st,
 		registry:      reg,
 		launcher:      l,
@@ -71,6 +82,10 @@ func New(st store.Store, reg *registry.Registry, l launcher.Launcher, profiles *
 		log:           logger,
 		launchTimeout: defaultLaunchTimeout,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // Profiles returns the configured RunConfig templates, for surfaces

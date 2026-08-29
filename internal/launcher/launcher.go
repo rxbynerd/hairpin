@@ -1,7 +1,7 @@
 // Package launcher abstracts how a stirrup harness is started for a
-// job. Implementations: k8s (a batch/v1 Job on the cluster) and process
-// (a local `stirrup job` subprocess, for development and end-to-end
-// tests).
+// job. The Kubernetes implementation creates one batch/v1 Job per run
+// from the stirrup harness image; None covers harnesses started
+// out-of-band.
 package launcher
 
 import (
@@ -23,8 +23,8 @@ type Launcher interface {
 }
 
 // None is a Launcher that starts nothing. Used when harnesses are
-// launched out-of-band (an operator running `stirrup job` by hand
-// against hairpin's address with the job ID as session ID).
+// launched out-of-band (an operator running the stirrup harness image
+// by hand against hairpin's address with the job ID as session ID).
 type None struct{}
 
 func (None) Launch(context.Context, *job.Job) error { return nil }

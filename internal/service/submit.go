@@ -34,6 +34,7 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 	if p.Prompt != "" {
 		cfg.Prompt = p.Prompt
 	}
+	applyExecutorDefaults(cfg, s.executorDefaults)
 	if err := validateRunConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -120,7 +121,7 @@ func validateRunConfig(cfg *harnessv1.RunConfig) error {
 	if cfg.GetExecutor().GetType() == "" {
 		return fmt.Errorf("run config executor.type is required (local, container, k8s, k8s-sandbox, api, none): %w", ErrInvalidArgument)
 	}
-	return nil
+	return validateExecutor(cfg.GetExecutor())
 }
 
 // launch drives the queued → launching → awaiting_harness transitions

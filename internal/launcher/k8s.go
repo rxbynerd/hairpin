@@ -28,7 +28,7 @@ const fallbackTimeoutSeconds = 3600
 // K8s launches one batch/v1 Job per hairpin job.
 type K8s struct {
 	client        kubernetes.Interface
-	cfg           config.K8sConfig
+	cfg           config.HarnessConfig
 	advertiseAddr string
 	logger        *slog.Logger
 }
@@ -37,7 +37,7 @@ type K8s struct {
 // config, then cfg.Kubeconfig, then $KUBECONFIG / the default
 // kubeconfig loading rules. It errors if none of those produce a
 // usable client.
-func NewK8s(cfg config.K8sConfig, advertiseAddr string, logger *slog.Logger) (*K8s, error) {
+func NewK8s(cfg config.HarnessConfig, advertiseAddr string, logger *slog.Logger) (*K8s, error) {
 	restCfg, err := buildRestConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("launcher: build kubernetes client config: %w", err)
@@ -51,14 +51,14 @@ func NewK8s(cfg config.K8sConfig, advertiseAddr string, logger *slog.Logger) (*K
 
 // NewK8sWithClient builds a K8s launcher around an existing client,
 // bypassing kubeconfig resolution — for tests, using a fake clientset.
-func NewK8sWithClient(client kubernetes.Interface, cfg config.K8sConfig, advertiseAddr string, logger *slog.Logger) *K8s {
+func NewK8sWithClient(client kubernetes.Interface, cfg config.HarnessConfig, advertiseAddr string, logger *slog.Logger) *K8s {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &K8s{client: client, cfg: cfg, advertiseAddr: advertiseAddr, logger: logger}
 }
 
-func buildRestConfig(cfg config.K8sConfig) (*rest.Config, error) {
+func buildRestConfig(cfg config.HarnessConfig) (*rest.Config, error) {
 	if rc, err := rest.InClusterConfig(); err == nil {
 		return rc, nil
 	}
@@ -77,7 +77,10 @@ func (l *K8s) Launch(ctx context.Context, j *job.Job) error {
 	ttl := l.cfg.TTLSecondsAfterFinished
 	activeDeadline := l.activeDeadlineSeconds(j)
 	backoffLimit := int32(0)
-	automountToken := false
+	// The harness creates and execs into sandbox Pods with this
+	// identity, so its token must be mounted. Without a ServiceAccount
+	// there is nothing worth mounting and the Pod stays tokenless.
+	automountToken := l.cfg.ServiceAccount != ""
 	runAsNonRoot := true
 
 	k8sJob := &batchv1.Job{

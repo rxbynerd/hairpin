@@ -39,7 +39,7 @@ func runConfigJSON(t *testing.T, timeoutSeconds int32) string {
 
 func TestK8sLaunchCreatesJob(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	cfg := config.K8sConfig{
+	cfg := config.HarnessConfig{
 		Namespace:               "hairpin",
 		Image:                   "example.com/stirrup:latest",
 		ServiceAccount:          "stirrup-harness",
@@ -99,9 +99,11 @@ func TestK8sLaunchCreatesJob(t *testing.T) {
 	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
 		t.Errorf("expected RunAsNonRoot true, got %+v", sc)
 	}
+	// The harness authenticates as this ServiceAccount to create and
+	// exec into sandbox Pods, so its token must reach the Pod.
 	amt := created.Spec.Template.Spec.AutomountServiceAccountToken
-	if amt == nil || *amt {
-		t.Errorf("expected AutomountServiceAccountToken false, got %v", amt)
+	if amt == nil || !*amt {
+		t.Errorf("expected AutomountServiceAccountToken true, got %v", amt)
 	}
 
 	if len(created.Spec.Template.Spec.Containers) != 1 {
@@ -145,7 +147,7 @@ func TestK8sLaunchCreatesJob(t *testing.T) {
 
 func TestK8sLaunchFallsBackOnUnparseableRunConfig(t *testing.T) {
 	client := fake.NewSimpleClientset()
-	cfg := config.K8sConfig{
+	cfg := config.HarnessConfig{
 		Namespace:           "hairpin",
 		Image:               "example.com/stirrup:latest",
 		ActiveDeadlineSlack: 10 * time.Minute,
@@ -168,7 +170,7 @@ func TestK8sLaunchFallsBackOnUnparseableRunConfig(t *testing.T) {
 }
 
 func TestK8sLaunchIsIdempotentOnAlreadyExists(t *testing.T) {
-	cfg := config.K8sConfig{
+	cfg := config.HarnessConfig{
 		Namespace: "hairpin",
 		Image:     "example.com/stirrup:latest",
 	}
@@ -182,5 +184,30 @@ func TestK8sLaunchIsIdempotentOnAlreadyExists(t *testing.T) {
 	j := &job.Job{ID: jobID, RunConfigJSON: runConfigJSON(t, 60)}
 	if err := l.Launch(context.Background(), j); err != nil {
 		t.Fatalf("Launch on already-existing job should succeed, got: %v", err)
+	}
+}
+
+// A harness with no ServiceAccount has no sandbox RBAC to carry, so it
+// gets no token.
+func TestK8sLaunchWithoutServiceAccountMountsNoToken(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	cfg := config.HarnessConfig{
+		Namespace: "hairpin",
+		Image:     "example.com/stirrup:latest",
+	}
+	l := NewK8sWithClient(client, cfg, "hairpin.hairpin.svc:8130", testLogger())
+
+	j := &job.Job{ID: job.NewID(), RunConfigJSON: runConfigJSON(t, 60)}
+	if err := l.Launch(context.Background(), j); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	created, err := client.BatchV1().Jobs("hairpin").Get(context.Background(), j.ID, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get created job: %v", err)
+	}
+	amt := created.Spec.Template.Spec.AutomountServiceAccountToken
+	if amt == nil || *amt {
+		t.Errorf("expected AutomountServiceAccountToken false, got %v", amt)
 	}
 }
