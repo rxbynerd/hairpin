@@ -1,0 +1,40 @@
+{{define "content"}}
+<section class="submit">
+<h2>Submit a job</h2>
+{{if .Error}}<p class="banner banner-error">{{.Error}}</p>{{end}}
+<form method="post" action="/jobs">
+<label for="prompt">Prompt</label>
+<textarea id="prompt" name="prompt" rows="4">{{.Form.Prompt}}</textarea>
+<label for="profile">Profile</label>
+<input id="profile" type="text" name="profile" value="{{.Form.Profile}}" placeholder="(default profile)">
+<details>
+<summary>Advanced: raw RunConfig JSON</summary>
+<textarea name="run_config_json" rows="8">{{.Form.RunConfigJSON}}</textarea>
+</details>
+<button type="submit">Submit job</button>
+</form>
+</section>
+
+<section class="jobs">
+<h2>Jobs</h2>
+<table>
+<thead>
+<tr><th>ID</th><th>Status</th><th>Prompt</th><th>Created</th><th>Finished</th><th>Stop reason</th></tr>
+</thead>
+<tbody>
+{{range .Jobs}}
+<tr>
+<td><a href="/jobs/{{.ID}}">{{.ID}}</a></td>
+<td><span class="badge badge-{{statusClass .Status}}">{{.Status}}</span></td>
+<td>{{.Prompt}}</td>
+<td>{{.CreatedAt}}</td>
+<td>{{.FinishedAt}}</td>
+<td>{{.StopReason}}</td>
+</tr>
+{{else}}
+<tr><td colspan="6" class="empty">No jobs yet.</td></tr>
+{{end}}
+</tbody>
+</table>
+</section>
+{{end}}

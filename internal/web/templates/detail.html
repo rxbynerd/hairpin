@@ -1,0 +1,61 @@
+{{define "content"}}
+<p><a href="/">&larr; all jobs</a></p>
+<h2>{{.Job.ID}}</h2>
+
+<section class="status-card">
+<span class="badge badge-{{statusClass .Job.Status}}">{{.Job.Status}}</span>
+<dl>
+<dt>Profile</dt><dd>{{if .Job.Profile}}{{.Job.Profile}}{{else}}&mdash;{{end}}</dd>
+<dt>Created</dt><dd>{{.Job.CreatedAt}}</dd>
+<dt>Started</dt><dd>{{if .Job.StartedAt}}{{.Job.StartedAt}}{{else}}&mdash;{{end}}</dd>
+<dt>Finished</dt><dd>{{if .Job.FinishedAt}}{{.Job.FinishedAt}}{{else}}&mdash;{{end}}</dd>
+<dt>Last event</dt><dd>{{if .Job.LastEventAge}}{{.Job.LastEventAge}}{{else}}&mdash;{{end}}</dd>
+<dt>Stop reason</dt><dd>{{if .Job.StopReason}}{{.Job.StopReason}}{{else}}&mdash;{{end}}</dd>
+{{if .Job.Error}}<dt>Error</dt><dd class="error-text">{{.Job.Error}}</dd>{{end}}
+</dl>
+{{if not .Job.Terminal}}
+<form method="post" action="/jobs/{{.Job.ID}}/cancel" class="cancel-form">
+<button type="submit" class="danger">Cancel job</button>
+</form>
+{{end}}
+</section>
+
+<section class="prompt">
+<h3>Prompt</h3>
+<pre class="pre-wrap">{{.Job.Prompt}}</pre>
+</section>
+
+{{if .Job.FinalText}}
+<section class="final-text">
+<h3>Final text</h3>
+<pre class="pre-wrap">{{.Job.FinalText}}</pre>
+</section>
+{{end}}
+
+<section class="permissions">
+<h3>Permission requests</h3>
+{{range .Permissions}}
+<div class="perm perm-{{.State}}">
+<p class="perm-head"><strong>{{.ToolName}}</strong> <span class="badge badge-{{.State}}">{{.State}}</span></p>
+<pre class="pre-wrap">{{.InputJSON}}</pre>
+{{if eq .State "pending"}}
+<form method="post" action="/jobs/{{$.Job.ID}}/permissions/{{.RequestID}}" class="perm-form">
+<input type="text" name="reason" placeholder="Reason (optional, used on deny)">
+<button type="submit" name="allow" value="true" class="allow">Allow</button>
+<button type="submit" name="allow" value="false" class="deny">Deny</button>
+</form>
+{{else}}
+<p class="perm-meta">{{if .Reason}}Reason: {{.Reason}} — {{end}}{{.AnsweredAt}}</p>
+{{end}}
+</div>
+{{else}}
+<p class="empty">No permission requests.</p>
+{{end}}
+</section>
+
+<section class="events">
+<h3>Live events</h3>
+<div id="event-feed" class="event-feed" data-job-id="{{.Job.ID}}" data-terminal="{{.Job.Terminal}}"></div>
+</section>
+<script src="/static/app.js"></script>
+{{end}}

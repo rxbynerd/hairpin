@@ -1,0 +1,19 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · hairpin</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="site-header">
+<a class="brand" href="/">hairpin</a>
+</header>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}
