@@ -1,0 +1,6 @@
+# Namespace hairpin runs in, and the default namespace its k8s
+# launcher creates harness Jobs into (--k8s-namespace below).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hairpin

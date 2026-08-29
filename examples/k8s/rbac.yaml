@@ -1,0 +1,39 @@
+# RBAC for the hairpin server itself: the identity its k8s launcher
+# (internal/launcher/k8s.go) authenticates as when creating harness
+# Jobs. Namespaced Role, not a ClusterRole — one hairpin deployment
+# manages Jobs in one namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hairpin
+  namespace: hairpin
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hairpin-job-launcher
+  namespace: hairpin
+rules:
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hairpin-job-launcher
+  namespace: hairpin
+subjects:
+  - kind: ServiceAccount
+    name: hairpin
+    namespace: hairpin
+roleRef:
+  kind: Role
+  name: hairpin-job-launcher
+  apiGroup: rbac.authorization.k8s.io

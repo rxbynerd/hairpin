@@ -1,0 +1,44 @@
+# Minimal, single-replica Redis for hairpin's store (internal/store/redisstore).
+# No persistence, no auth, no HA — fine for a kind cluster or evaluation.
+# For anything longer-lived, point --redis at a managed instance (e.g. a
+# cloud provider's Redis/Valkey service, or a HA Redis operator) instead
+# of applying this file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+              name: redis
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: hairpin
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - port: 6379
+      targetPort: redis
