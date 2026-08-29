@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/job"
@@ -142,7 +143,7 @@ func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 
 	case evSandboxTokenRequest:
 		p.appendProto(ev, now)
-		p.refuseSandboxToken(ev)
+		p.handleSandboxTokenRequest(ev)
 
 	case evToolResultRequest:
 		p.appendProto(ev, now)
@@ -232,15 +233,59 @@ func (p *eventPump) putPermission(ev *harnessv1.HarnessEvent, at time.Time) {
 	}
 }
 
-func (p *eventPump) refuseSandboxToken(ev *harnessv1.HarnessEvent) {
+// handleSandboxTokenRequest answers a sandbox_token_request: a signed
+// token when an issuer is configured, otherwise the explicit refusal
+// that lets an opted-in run config fail fast rather than wait out the
+// harness's 60s timeout.
+func (p *eventPump) handleSandboxTokenRequest(ev *harnessv1.HarnessEvent) {
+	if p.h.issuer == nil {
+		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenRefusal)
+		return
+	}
+
+	// The harness's requested audience is informational only (proto
+	// contract): the configured audience always wins. A mismatch is
+	// logged, not honoured, since minting for an unconfigured audience
+	// would hand out a token no verifier trusts.
+	if aud := ev.GetAudience(); aud != "" && aud != p.h.issuer.Audience() {
+		p.h.log.Info("harness requested a sandbox token audience that differs from the configured one; using the configured audience",
+			"job_id", p.jobID, "requested_audience", aud, "configured_audience", p.h.issuer.Audience())
+	}
+
+	j, err := p.h.store.GetJob(p.ctx, p.jobID)
+	if err != nil {
+		p.h.log.Error("failed to load job for sandbox token issuance",
+			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
+		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenIssuanceFailure)
+		return
+	}
+
+	token, expiresAt, err := p.h.issuer.Mint(p.jobID, j.RepoScope)
+	if err != nil {
+		p.h.log.Error("failed to mint sandbox identity token",
+			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
+		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenIssuanceFailure)
+		return
+	}
+	p.sendSandboxTokenResponse(ev, token, expiresAt, false, "")
+}
+
+// sendSandboxTokenResponse sends one sandbox_token_response. token is
+// SENSITIVE: it is handed to Send verbatim and never logged, appended
+// to the timeline, or otherwise persisted.
+func (p *eventPump) sendSandboxTokenResponse(ev *harnessv1.HarnessEvent, token string, expiresAt time.Time, isError bool, reason string) {
 	resp := &harnessv1.ControlEvent{
 		Type:      ctlSandboxTokenResponse,
 		RequestId: ev.GetRequestId(),
-		IsError:   &harnessv1.OptionalBool{Value: true},
-		Reason:    sandboxTokenRefusal,
+		Token:     token,
+		IsError:   &harnessv1.OptionalBool{Value: isError},
+		Reason:    reason,
+	}
+	if !isError && !expiresAt.IsZero() {
+		resp.ExpiresAt = proto.Int64(expiresAt.Unix())
 	}
 	if err := p.sess.Send(resp); err != nil {
-		p.h.log.Error("failed to refuse sandbox token request",
+		p.h.log.Error("failed to send sandbox token response",
 			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
 	}
 }

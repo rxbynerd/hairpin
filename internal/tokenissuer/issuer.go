@@ -89,6 +89,9 @@ func New(priv *ecdsa.PrivateKey, issuer, audience string, ttl time.Duration, opt
 // a verifier looks it up by.
 func (i *Issuer) KeyID() string { return i.kid }
 
+// Audience returns the "aud" claim this Issuer mints tokens with.
+func (i *Issuer) Audience() string { return i.audience }
+
 // JWKS returns the JWKS document for this Issuer's public key. The
 // returned bytes are shared and must not be mutated.
 func (i *Issuer) JWKS() []byte { return i.jwks }

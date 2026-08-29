@@ -2,11 +2,15 @@ package main
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/hairpin/internal/config"
 	"github.com/rxbynerd/hairpin/internal/telemetry"
+	"github.com/rxbynerd/hairpin/internal/tokenissuer"
 )
 
 func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
@@ -123,5 +127,67 @@ func TestParseServeFlagsTelemetryProtocolFromEnvironment(t *testing.T) {
 	}
 	if cfg.Telemetry.Protocol != telemetry.ProtocolHTTP {
 		t.Errorf("protocol = %q, want %s from the environment", cfg.Telemetry.Protocol, telemetry.ProtocolHTTP)
+	}
+}
+
+func TestBuildTokenIssuerMissingFile(t *testing.T) {
+	cfg := &config.Config{SandboxToken: config.SandboxTokenConfig{KeyPath: filepath.Join(t.TempDir(), "missing.pem")}}
+	if _, err := buildTokenIssuer(cfg); err == nil {
+		t.Fatal("buildTokenIssuer succeeded against a missing key file")
+	}
+}
+
+func TestBuildTokenIssuerDisabled(t *testing.T) {
+	issuer, err := buildTokenIssuer(&config.Config{})
+	if err != nil {
+		t.Fatalf("buildTokenIssuer: %v", err)
+	}
+	if issuer != nil {
+		t.Fatal("expected nil issuer when no key is configured")
+	}
+}
+
+func TestBuildTokenIssuerEndToEnd(t *testing.T) {
+	priv, err := tokenissuer.GenerateKey()
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pemBytes, err := tokenissuer.EncodePrivateKeyPEM(priv)
+	if err != nil {
+		t.Fatalf("EncodePrivateKeyPEM: %v", err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	cfg, err := parseServeFlags([]string{
+		"-listen", ":0",
+		"-advertise", "hairpin.test.svc:8130",
+		"-launcher", "none",
+		"-sandbox-token-key", keyPath,
+		"-sandbox-token-issuer", "https://hairpin.internal",
+		"-sandbox-token-audience", "https://haybale.internal",
+	})
+	if err != nil {
+		t.Fatalf("parseServeFlags: %v", err)
+	}
+
+	issuer, err := buildTokenIssuer(cfg)
+	if err != nil {
+		t.Fatalf("buildTokenIssuer: %v", err)
+	}
+	if issuer == nil {
+		t.Fatal("expected a configured issuer")
+	}
+	token, _, err := issuer.Mint("hp-smoke", nil)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	if token == "" {
+		t.Fatal("Mint returned an empty token")
+	}
+	if len(issuer.JWKS()) == 0 {
+		t.Fatal("JWKS() returned nothing")
 	}
 }

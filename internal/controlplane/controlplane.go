@@ -56,9 +56,9 @@ const EventStatusChange = "status_change"
 // event: the workload died, was evicted, or lost its connection.
 const msgStreamClosed = "harness stream closed without done"
 
-// sandboxTokenRefusal is returned for sandbox_token_request so opted-in
-// run configs abort immediately instead of waiting out the harness's
-// 60s fail-closed timeout.
+// sandboxTokenRefusal is returned for sandbox_token_request when no
+// issuer is configured, so opted-in run configs abort immediately
+// instead of waiting out the harness's 60s fail-closed timeout.
 const sandboxTokenRefusal = "hairpin does not issue sandbox identity tokens"
 
 // Refusals for a tool_result_request hairpin will not answer. Each is
@@ -80,6 +80,11 @@ const (
 	maxRequestIDBytes        = 128
 )
 
+// sandboxTokenIssuanceFailure is returned for sandbox_token_request
+// when an issuer is configured but minting failed. Deliberately generic
+// — the real error is logged, not sent to the harness.
+const sandboxTokenIssuanceFailure = "hairpin failed to issue a sandbox identity token"
+
 // Tuning defaults for the event pump.
 const (
 	defaultLastEventFlush  = 10 * time.Second
@@ -91,6 +96,17 @@ const (
 type stream interface {
 	Receive() (*harnessv1.HarnessEvent, error)
 	Send(*harnessv1.ControlEvent) error
+}
+
+// SandboxTokenIssuer mints sandbox identity tokens for sandbox_token_request.
+// Satisfied by *internal/tokenissuer.Issuer; a narrow interface here keeps
+// tests free of real ECDSA keys.
+type SandboxTokenIssuer interface {
+	// Mint signs a token for sub (hairpin uses the job ID), scoped to
+	// repoScope.
+	Mint(sub string, repoScope []string) (token string, expiresAt time.Time, err error)
+	// Audience is the configured "aud" claim minted tokens carry.
+	Audience() string
 }
 
 // Handler implements harnessv1connect.HarnessServiceHandler.
@@ -110,6 +126,10 @@ type Handler struct {
 	maxMemoryCalls    int
 
 	memoryWait sync.WaitGroup
+
+	// issuer mints sandbox identity tokens when configured. nil means
+	// issuance is disabled: sandbox_token_request is refused.
+	issuer SandboxTokenIssuer
 }
 
 // Option configures a Handler.
@@ -138,6 +158,14 @@ func WithMemory(c memory.Client) Option {
 // nothing.
 func WithTelemetry(rec *telemetry.Recorder) Option {
 	return func(h *Handler) { h.tel = rec }
+}
+
+// WithSandboxTokenIssuer enables sandbox_token_request issuance: a
+// harness request is answered with a signed token instead of the
+// explicit refusal. A nil issuer (the default) leaves issuance
+// disabled.
+func WithSandboxTokenIssuer(issuer SandboxTokenIssuer) Option {
+	return func(h *Handler) { h.issuer = issuer }
 }
 
 // New returns a control-plane handler backed by st, publishing live
