@@ -256,6 +256,14 @@ type SubmitJobRequest struct {
 	// defaulting: mode, provider.type (or providers), executor.type,
 	// max_turns, and timeout must all be explicit.
 	RunConfigJson string `protobuf:"bytes,3,opt,name=run_config_json,json=runConfigJson,proto3" json:"run_config_json,omitempty"`
+	// Optional. Repo access to grant a sandbox_token_request issued for
+	// this job, carried as the "haybale.dev/repos" claim: each entry is a
+	// path.Match glob over "host/owner/repo" (e.g.
+	// "github.com/rxbynerd/*"), matched by haybale against the repo it is
+	// proxying. Empty means the token carries no repo grant at all — with
+	// haybale's default-deny policy this denies every repo, it does not
+	// permit them.
+	RepoScope     []string `protobuf:"bytes,4,rep,name=repo_scope,json=repoScope,proto3" json:"repo_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -309,6 +317,13 @@ func (x *SubmitJobRequest) GetRunConfigJson() string {
 		return x.RunConfigJson
 	}
 	return ""
+}
+
+func (x *SubmitJobRequest) GetRepoScope() []string {
+	if x != nil {
+		return x.RepoScope
+	}
+	return nil
 }
 
 type SubmitJobResponse struct {
@@ -1149,11 +1164,13 @@ const file_hairpin_v1_hairpin_proto_rawDesc = "" +
 	"\vfinished_at\x18\n" +
 	" \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"finishedAt\x12>\n" +
-	"\rlast_event_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\vlastEventAt\"l\n" +
+	"\rlast_event_at\x18\v \x01(\v2\x1a.google.protobuf.TimestampR\vlastEventAt\"\x8b\x01\n" +
 	"\x10SubmitJobRequest\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x18\n" +
 	"\aprofile\x18\x02 \x01(\tR\aprofile\x12&\n" +
-	"\x0frun_config_json\x18\x03 \x01(\tR\rrunConfigJson\"_\n" +
+	"\x0frun_config_json\x18\x03 \x01(\tR\rrunConfigJson\x12\x1d\n" +
+	"\n" +
+	"repo_scope\x18\x04 \x03(\tR\trepoScope\"_\n" +
 	"\x11SubmitJobResponse\x12!\n" +
 	"\x03job\x18\x01 \x01(\v2\x0f.hairpin.v1.JobR\x03job\x12'\n" +
 	"\x0fharness_session\x18\x02 \x01(\tR\x0eharnessSession\"\x1f\n" +

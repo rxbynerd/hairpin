@@ -114,6 +114,14 @@ message SubmitJobRequest {
   // defaulting: mode, provider.type (or providers), executor.type,
   // max_turns, and timeout must all be explicit.
   string run_config_json = 3;
+  // Optional. Repo access to grant a sandbox_token_request issued for
+  // this job, carried as the "haybale.dev/repos" claim: each entry is a
+  // path.Match glob over "host/owner/repo" (e.g.
+  // "github.com/rxbynerd/*"), matched by haybale against the repo it is
+  // proxying. Empty means the token carries no repo grant at all — with
+  // haybale's default-deny policy this denies every repo, it does not
+  // permit them.
+  repeated string repo_scope = 4;
 }
 
 message SubmitJobResponse {
