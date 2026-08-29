@@ -92,13 +92,18 @@ curl -fsS -u "${GITEA_USER}:${gitea_password}" \
 kill "${gitea_forward_pid}" 2>/dev/null || true
 trap 'rm -f "${archive}"' EXIT
 
+log "deploying haybale..."
+kubectl apply -f "${REPO_ROOT}/examples/k8s/haybale.yaml"
+
+# haybale.yaml bundles its own placeholder haybale-gitea-token Secret
+# (REPLACE_ME) so `kubectl apply -f examples/k8s/` has something to
+# mount outside this script; applying it here would clobber the real
+# token, so the real one is written after, not before.
 log "recording the gitea token in the haybale-gitea-token Secret..."
 kubectl -n "${NAMESPACE}" create secret generic haybale-gitea-token \
     --from-literal=HAYBALE_GITEA_TOKEN="${token}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
-log "deploying haybale..."
-kubectl apply -f "${REPO_ROOT}/examples/k8s/haybale.yaml"
 kubectl -n "${NAMESPACE}" set image deployment/haybale "haybale=${IMAGE}"
 kubectl -n "${NAMESPACE}" patch deployment haybale --type=json \
     -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]' \

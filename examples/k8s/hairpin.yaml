@@ -32,6 +32,10 @@ spec:
       serviceAccountName: hairpin
       securityContext:
         runAsNonRoot: true
+        # Secret volumes are owned by root:fsGroup; without this, the
+        # container's non-root UID (65532, from the image) can't read
+        # the sandbox-token key regardless of defaultMode.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -97,10 +101,9 @@ spec:
         - name: sandbox-token-key
           secret:
             secretName: hairpin-sandbox-token-key
-            # Private key material gets no group/other permission bits,
-            # matching the posture haybale itself requires of its own
-            # mounted keys (TLS, GitHub App) — see sandbox-token.yaml.
-            defaultMode: 0400
+            # Owner-and-group read only; group read is required so the
+            # fsGroup-owned file is readable by the container's UID.
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service
