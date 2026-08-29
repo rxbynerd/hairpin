@@ -132,7 +132,10 @@ memory calls per run, and refuses repeated request IDs. See
 
 - Follow-up turns (`followUpGrace` / `user_response`) are not supported;
   one hairpin job represents one run.
-- `sandbox_token_request` receives an explicit `is_error` refusal.
+- `sandbox_token_request` is answered with a signed sandbox identity
+  token only when `-sandbox-token-key` is configured (see
+  [`docs/deployment.md`](deployment.md#sandbox-identity-tokens));
+  otherwise it receives an explicit `is_error` refusal.
 - Asynchronous tool results are answered only for the two memory
   tools; `SubmitJob` rejects a `tools.controlPlane` entry naming
   anything else. Batch requests are recorded but not answered, and a

@@ -264,6 +264,73 @@ Secret names (comma-separated) for additional providers, VCS tokens,
 or MCP credentials; hairpin itself never reads or handles the secret
 values — it only tells Kubernetes which Secrets to mount.
 
+### Sandbox identity tokens
+
+A RunConfig's `executor.sandbox_identity` asks the harness to fetch a
+short-lived credential for the sandbox before it starts, then inject
+it into the sandbox environment (`HAYBALE_TOKEN` by default) for
+[haybale](https://github.com/rxbynerd/haybale), an authenticating
+reverse proxy for Git smart HTTP: the sandbox authenticates to haybale
+with this token, haybale checks a default-deny repo policy and swaps
+in a per-request upstream credential, and the upstream credential
+never reaches the sandbox. hairpin is the token issuer stirrup's wire
+contract calls "the control plane" — see stirrup's
+`docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers`
+for the request/response shape.
+
+Issuance is off by default: a harness's `sandbox_token_request` gets an
+explicit `is_error` refusal, same as before this feature existed, so
+an opted-in run config fails fast instead of waiting out the harness's
+60s timeout. Configure four flags to enable it:
+
+| Flag | Meaning |
+|---|---|
+| `-sandbox-token-key` | Path to an ES256 (P-256) private key PEM. Empty (the default) disables issuance entirely. |
+| `-sandbox-token-issuer` | The token's `iss` claim. Required when `-sandbox-token-key` is set. |
+| `-sandbox-token-audience` | The token's `aud` claim — must match what haybale's `issuer.audience` config expects. Required when `-sandbox-token-key` is set. The harness's own requested audience (`executor.sandbox_identity.audience`) is informational only; this flag's value always wins, and a mismatch is logged, not honoured. |
+| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less. |
+
+`hairpin keygen --out <path> [--jwks-out <path>]` generates the key:
+a fresh P-256 private key PEM written to `--out` with file mode
+`0600`, and the matching JWKS document written to `--jwks-out` (or
+stdout when omitted). The command also prints the key's `kid` — the
+RFC 7638 JWK thumbprint of the public key, deterministic in the key
+alone, so re-deploying the same key always serves the same `kid` and a
+key rotation always serves a different one. Run it once, then:
+
+- Put the private key PEM into the Secret `-sandbox-token-key` reads
+  from (`kubectl create secret generic sandbox-token-key
+  --from-file=key.pem=<path>`, mounted into the hairpin Pod).
+- Give the JWKS document to haybale.
+
+**haybale's `jwksURL` must be HTTPS or loopback** — it refuses a
+plain-HTTP, non-loopback URL outright, which rules out pointing it
+directly at hairpin's in-cluster `GET /.well-known/jwks.json` (served
+over the same unencrypted h2c listener as everything else — see
+[Trust posture](../README.md#trust-posture)). The reference deployment
+therefore ships the JWKS document to haybale as a file instead: run
+`hairpin keygen` once, put the JWKS JSON in a ConfigMap, and mount it
+where haybale's config points its `jwksFile` at. `hairpin keygen`
+generating both outputs from one invocation is exactly so the Secret
+and the ConfigMap always describe the same key. The
+`GET /.well-known/jwks.json` route stays up regardless (present
+whenever `-sandbox-token-key` is configured, absent — 404 — otherwise)
+for deployments that do front hairpin in HTTPS, or for a quick
+`curl`-and-inspect of the current key.
+
+Two hairpin-side decisions worth knowing when reasoning about a
+minted token:
+
+- **`sub` is the hairpin job ID.** haybale renders the identity as
+  `"{sub}"` in its policy; a policy keyed on run identity is keyed on
+  job IDs.
+- **The repo grant comes from `SubmitJobRequest.repo_scope`**, carried
+  into the token as the `haybale.dev/repos` claim — see
+  [`docs/api.md`](api.md#submitjob). Profiles stay pure stirrup
+  RunConfig JSON with no hairpin-specific fields, so there is
+  deliberately no profile-side equivalent; scope is a per-submission
+  grant, not a template default.
+
 ### `activeDeadlineSeconds` and the deadline slack
 
 The launcher sets each harness Job's `activeDeadlineSeconds` to the

@@ -217,6 +217,10 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | `-sandbox-namespace` | *(`-namespace`)* | Namespace sandbox Pods and their NetworkPolicies are created in. |
 | `-sandbox-service-account` | *(empty)* | ServiceAccount for sandbox Pods. Its token is never mounted. |
 | `-sandbox-runtime` | *(cluster default)* | `RuntimeClassName` for sandbox Pods: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`. |
+| `-sandbox-token-key` | *(empty)* | Path to an ES256 (P-256) private key PEM for signing sandbox identity tokens. Empty disables issuance (`sandbox_token_request` is refused). |
+| `-sandbox-token-issuer` | *(empty)* | `iss` claim on minted sandbox identity tokens. Required when `-sandbox-token-key` is set. |
+| `-sandbox-token-audience` | *(empty)* | `aud` claim on minted sandbox identity tokens. Required when `-sandbox-token-key` is set; always wins over the harness's requested audience. |
+| `-sandbox-token-ttl` | `15m` | TTL of minted sandbox identity tokens. |
 | `-harness-telemetry-endpoint` | *(empty)* | OTLP/gRPC `host:port`, resolved from the harness Pod, injected as a submitted RunConfig's `trace_emitter` where it names none. The harness exports the run's own trace there. |
 | `-telemetry` | `none` | OpenTelemetry exporter: `none`, `otlp`, or `stdout`. See [`docs/observability.md`](docs/observability.md). |
 | `-telemetry-protocol` | `$OTEL_EXPORTER_OTLP_PROTOCOL`, else `grpc` | OTLP transport: `grpc` or `http/protobuf`. |
@@ -231,11 +235,16 @@ from the standard `OTEL_*` environment variables. They cover hairpin's
 own signals only — `-harness-telemetry-endpoint` is independent of
 them, and of each other's collectors.
 
-The four `-sandbox-*` flags and `-harness-telemetry-endpoint` do not
-configure hairpin's own behaviour — they are values it writes into each
-submitted RunConfig, into the executor and `trace_emitter`
-respectively, wherever the profile left them empty. See
-[Profiles](#profiles).
+The four sandbox coordinate flags — `-sandbox-image`,
+`-sandbox-namespace`, `-sandbox-service-account`, `-sandbox-runtime` —
+and `-harness-telemetry-endpoint` do not configure hairpin's own
+behaviour: they are values it writes into each submitted RunConfig,
+into the executor and `trace_emitter` respectively, wherever the
+profile left them empty. See [Profiles](#profiles).
+
+The `-sandbox-token-*` flags are hairpin's own: they configure it as a
+JWT issuer for haybale's git credential proxy — see [Sandbox identity
+tokens](docs/deployment.md#sandbox-identity-tokens).
 
 `-launcher=none` disables harness launching entirely: jobs sit in
 `awaiting_harness` until something starts a harness out-of-band with

@@ -32,6 +32,7 @@ Request fields (`SubmitJobRequest`):
 | `prompt` | The task prompt. A non-empty value replaces the prompt in the selected profile or `run_config_json`; when empty, the config must already carry a prompt. |
 | `profile` | Named RunConfig profile to resolve against. Empty selects the server's default profile. Mutually exclusive with `run_config_json`. |
 | `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form. Hairpin forces `run_id` to the job ID, applies a non-empty request `prompt`, and fills unset sandbox coordinates on `k8s`/`k8s-sandbox` executors from the server's `-sandbox-*` flags, and fills an unset `trace_emitter` from `-harness-telemetry-endpoint`. See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
+| `repo_scope` | Repo access to grant a `sandbox_token_request` issued for this job: each entry is a [`path.Match`](https://pkg.go.dev/path#Match) glob over `host/owner/repo` (e.g. `github.com/rxbynerd/*`), carried into the minted token as the `haybale.dev/repos` claim. Empty grants no repos — with haybale's default-deny policy this denies every repo, it does not permit them. At most 32 entries; each must be non-empty and contain no whitespace. See [Sandbox identity tokens](deployment.md#sandbox-identity-tokens). |
 
 Whichever source the RunConfig comes from, `SubmitJob` also rejects it
 with `invalid_argument` when `tools.controlPlane` names a tool other
@@ -250,7 +251,7 @@ hairpin synthesises itself:
 | `warning` | harness | `message`; non-fatal. |
 | `error` | harness | `message`. The normal failure path follows it with `done` carrying `stop_reason: "error"`; transport loss can still end the stream first. |
 | `done` | harness | `stop_reason`, and `trace` when the harness populated it. Always the last harness-originated event of a run. |
-| `sandbox_token_request` | harness | Recorded, then hairpin immediately answers with an explicit refusal — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
+| `sandbox_token_request` | harness | Recorded, then answered with a signed sandbox identity token when `-sandbox-token-key` is configured, otherwise an explicit `is_error` refusal — see [Sandbox identity tokens](deployment.md#sandbox-identity-tokens). The response itself (the token) is never recorded on the timeline. |
 | `tool_result_request` | harness | `request_id`, `tool_use_id`, `tool_name`, base64-encoded `input`. A call to a control-plane tool. Hairpin answers `search_memory` and `save_memory` calls the run declared by proxying them to Billet, and refuses anything else — see [`docs/memory.md`](memory.md). |
 | `tool_result_response` | hairpin | `request_id`, `content`, `is_error`. The `ControlEvent` hairpin sent in answer to a `tool_result_request`, recorded whether or not delivery to the harness succeeded. |
 | `batch_submission` | harness | Recorded but not answered — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
@@ -323,9 +324,11 @@ Hairpin currently supports one harness run per job and does not
 implement these optional parts of the stirrup protocol:
 
 - Follow-up turns (`followUpGrace` / `user_response`).
-- Sandbox identity token issuance. A `sandbox_token_request` receives an
-  explicit `is_error` refusal so the harness fails before creating a
-  sandbox.
+- Sandbox identity token issuance on a server started without
+  `-sandbox-token-key`. Such a server answers `sandbox_token_request`
+  with an explicit `is_error` refusal so the harness fails before
+  creating a sandbox; see
+  [Sandbox identity tokens](deployment.md#sandbox-identity-tokens).
 - Batch execution. Related events are recorded, but Hairpin does not
   send the required provider result.
 - Asynchronous tool results for any control-plane tool other than the
