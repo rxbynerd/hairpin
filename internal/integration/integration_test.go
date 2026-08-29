@@ -35,6 +35,7 @@ const testRunConfig = `{
 	"provider": {"type": "anthropic", "apiKeyRef": "secret://ANTHROPIC_API_KEY"},
 	"permissionPolicy": {"type": "ask-upstream"},
 	"tools": {"builtIn": ["read_file"]},
+	"executor": {"type": "local"},
 	"maxTurns": 5,
 	"timeout": 300
 }`
@@ -114,6 +115,7 @@ func TestFullLoop(t *testing.T) {
 		t.Fatalf("SubmitJob: %v", err)
 	}
 	jobID := sub.Msg.Job.Id
+	session := sub.Msg.HarnessSession
 	if !strings.HasPrefix(jobID, "hp-") {
 		t.Fatalf("unexpected job id %q", jobID)
 	}
@@ -126,7 +128,7 @@ func TestFullLoop(t *testing.T) {
 
 	harness := harnessv1connect.NewHarnessServiceClient(client, baseURL, connect.WithGRPC())
 	stream := harness.RunTask(ctx)
-	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: jobID, HarnessVersion: "test"}); err != nil {
+	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: session, HarnessVersion: "test"}); err != nil {
 		t.Fatalf("send ready: %v", err)
 	}
 
@@ -240,6 +242,7 @@ func TestCancelBeforeHarness(t *testing.T) {
 		t.Fatalf("SubmitJob: %v", err)
 	}
 	jobID := sub.Msg.Job.Id
+	session := sub.Msg.HarnessSession
 	waitForStatus(t, jobs, jobID, hairpinv1.JobStatus_JOB_STATUS_AWAITING_HARNESS)
 
 	if _, err := jobs.CancelJob(ctx, connect.NewRequest(&hairpinv1.CancelJobRequest{Id: jobID})); err != nil {
@@ -249,7 +252,7 @@ func TestCancelBeforeHarness(t *testing.T) {
 
 	harness := harnessv1connect.NewHarnessServiceClient(client, baseURL, connect.WithGRPC())
 	stream := harness.RunTask(ctx)
-	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: jobID, HarnessVersion: "test"}); err != nil {
+	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: session, HarnessVersion: "test"}); err != nil {
 		t.Fatalf("send ready: %v", err)
 	}
 	ev, err := stream.Receive()
@@ -258,6 +261,47 @@ func TestCancelBeforeHarness(t *testing.T) {
 	}
 	if ev.Type != "cancel" {
 		t.Fatalf("late harness got %q, want cancel", ev.Type)
+	}
+}
+
+// TestBareJobIDRejected proves the session token is load-bearing: a
+// harness presenting only the (guessable) job ID is turned away.
+func TestBareJobIDRejected(t *testing.T) {
+	baseURL, client := startServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	jobs := hairpinv1connect.NewJobServiceClient(client, baseURL)
+	sub, err := jobs.SubmitJob(ctx, connect.NewRequest(&hairpinv1.SubmitJobRequest{RunConfigJson: testRunConfig}))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	jobID := sub.Msg.Job.Id
+	waitForStatus(t, jobs, jobID, hairpinv1.JobStatus_JOB_STATUS_AWAITING_HARNESS)
+
+	harness := harnessv1connect.NewHarnessServiceClient(client, baseURL, connect.WithGRPC())
+	for _, id := range []string{jobID, jobID + ".wrong-token"} {
+		stream := harness.RunTask(ctx)
+		if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: id, HarnessVersion: "test"}); err != nil {
+			t.Fatalf("send ready: %v", err)
+		}
+		ev, err := stream.Receive()
+		if err != nil {
+			t.Fatalf("receive: %v", err)
+		}
+		if ev.Type != "cancel" {
+			t.Fatalf("harness with session %q got %q, want cancel", id, ev.Type)
+		}
+		_ = stream.CloseRequest()
+	}
+
+	// The job is untouched and still claimable by the real session.
+	got, err := jobs.GetJob(ctx, connect.NewRequest(&hairpinv1.GetJobRequest{Id: jobID}))
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.Msg.Job.Status != hairpinv1.JobStatus_JOB_STATUS_AWAITING_HARNESS {
+		t.Fatalf("job status after rejected claims = %v", got.Msg.Job.Status)
 	}
 }
 
@@ -274,11 +318,12 @@ func TestCrashSettlement(t *testing.T) {
 		t.Fatalf("SubmitJob: %v", err)
 	}
 	jobID := sub.Msg.Job.Id
+	session := sub.Msg.HarnessSession
 	waitForStatus(t, jobs, jobID, hairpinv1.JobStatus_JOB_STATUS_AWAITING_HARNESS)
 
 	harness := harnessv1connect.NewHarnessServiceClient(client, baseURL, connect.WithGRPC())
 	stream := harness.RunTask(ctx)
-	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: jobID, HarnessVersion: "test"}); err != nil {
+	if err := stream.Send(&harnessv1.HarnessEvent{Type: "ready", Id: session, HarnessVersion: "test"}); err != nil {
 		t.Fatalf("send ready: %v", err)
 	}
 	if _, err := stream.Receive(); err != nil {

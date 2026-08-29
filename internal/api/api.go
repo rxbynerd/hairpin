@@ -40,7 +40,13 @@ func (s *Server) SubmitJob(ctx context.Context, req *connect.Request[hairpinv1.S
 	if err != nil {
 		return nil, connectError(err)
 	}
-	return connect.NewResponse(&hairpinv1.SubmitJobResponse{Job: jobToProto(j)}), nil
+	return connect.NewResponse(&hairpinv1.SubmitJobResponse{
+		Job: jobToProto(j),
+		// The one place the bearer session leaves hairpin: the submitter
+		// needs it only when running harnesses out-of-band (launcher
+		// "none").
+		HarnessSession: j.SessionString(),
+	}), nil
 }
 
 func (s *Server) GetJob(ctx context.Context, req *connect.Request[hairpinv1.GetJobRequest]) (*connect.Response[hairpinv1.GetJobResponse], error) {

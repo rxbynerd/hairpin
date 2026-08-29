@@ -13,9 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/rxbynerd/hairpin/gen/hairpin/v1/hairpinv1connect"
+	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/api"
 	"github.com/rxbynerd/hairpin/internal/config"
 	"github.com/rxbynerd/hairpin/internal/controlplane"
@@ -114,7 +116,10 @@ func serve(cfg *config.Config) error {
 	mux := http.NewServeMux()
 	cpPath, cpHandler := controlplane.New(st, reg, controlplane.WithLogger(logger)).NewHTTPHandler()
 	mux.Handle(cpPath, cpHandler)
-	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc))
+	// 4 MiB bounds a submit (RunConfigs are small; dynamic context is
+	// capped harness-side at 50 KiB per entry) without letting one
+	// request balloon memory.
+	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc), connect.WithReadMaxBytes(4<<20))
 	mux.Handle(apiPath, apiHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -151,10 +156,20 @@ func serve(cfg *config.Config) error {
 		logger.Info("shutting down", "signal", sig.String())
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Cancel live runs first: the harness reacts within one turn and
+	// emits done{cancelled}, letting the control-plane streams settle
+	// their jobs before the listener drains. Without this, restart
+	// leaves every in-flight job stuck "running" with no terminal
+	// record.
+	for _, id := range reg.JobIDs() {
+		if err := reg.Send(id, &harnessv1.ControlEvent{Type: "cancel"}); err != nil {
+			logger.Warn("failed to cancel live run for shutdown", "job_id", id, "error", err)
+		}
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Warn("forced shutdown", "error", err)
+		logger.Warn("shutdown grace expired with streams still open", "error", err)
 	}
 	svc.WaitForLaunches()
 	return nil

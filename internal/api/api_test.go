@@ -55,6 +55,7 @@ func newHarness(t *testing.T) *harness {
 		Mode:     "planning",
 		Provider: &harnessv1.ProviderConfig{Type: "anthropic"},
 		MaxTurns: 20,
+		Executor: &harnessv1.ExecutorConfig{Type: "local"},
 		Timeout:  proto.Int32(600),
 	}
 	profiles, err := service.NewProfiles(map[string]*harnessv1.RunConfig{"default": template}, "default")
@@ -123,7 +124,7 @@ func TestSubmitJobInvalidArgument(t *testing.T) {
 
 func TestGetJobNotFound(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.client.GetJob(context.Background(), connect.NewRequest(&hairpinv1.GetJobRequest{Id: "hp-missing"}))
+	_, err := h.client.GetJob(context.Background(), connect.NewRequest(&hairpinv1.GetJobRequest{Id: absentJobID}))
 	assertCode(t, err, connect.CodeNotFound)
 }
 
@@ -254,7 +255,7 @@ func TestWatchJobStreamsUntilTerminal(t *testing.T) {
 
 func TestWatchJobNotFound(t *testing.T) {
 	h := newHarness(t)
-	stream, err := h.client.WatchJob(context.Background(), connect.NewRequest(&hairpinv1.WatchJobRequest{Id: "hp-missing"}))
+	stream, err := h.client.WatchJob(context.Background(), connect.NewRequest(&hairpinv1.WatchJobRequest{Id: absentJobID}))
 	if err != nil {
 		assertCode(t, err, connect.CodeNotFound)
 		return
@@ -271,6 +272,7 @@ func TestSubmitJobExplicitRunConfig(t *testing.T) {
 		Mode:     "execution",
 		Provider: &harnessv1.ProviderConfig{Type: "anthropic"},
 		MaxTurns: 3,
+		Executor: &harnessv1.ExecutorConfig{Type: "local"},
 		Timeout:  proto.Int32(30),
 	})
 	if err != nil {
@@ -332,3 +334,7 @@ func putPending(t *testing.T, st store.Store, jobID, requestID string) {
 		t.Fatalf("PutPermission: %v", err)
 	}
 }
+
+// absentJobID is well-formed (passes ID validation) but never created,
+// exercising the not-found path rather than the malformed-ID path.
+const absentJobID = "hp-00000000000000000000000000"

@@ -97,16 +97,30 @@ func (l *K8s) Launch(ctx context.Context, j *job.Job) error {
 					ServiceAccountName:           l.cfg.ServiceAccount,
 					AutomountServiceAccountToken: &automountToken,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: &runAsNonRoot,
+						RunAsNonRoot:   &runAsNonRoot,
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					// The harness writes health markers and scratch
+					// files under /tmp; an emptyDir keeps that working
+					// with the hardened container context below.
+					Volumes: []corev1.Volume{
+						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
 					Containers: []corev1.Container{
 						{
 							Name:  "stirrup",
 							Image: l.cfg.Image,
 							Args:  []string{"job"},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptrTo(false),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "tmp", MountPath: "/tmp"},
+							},
 							Env: []corev1.EnvVar{
 								{Name: "CONTROL_PLANE_ADDR", Value: l.advertiseAddr},
-								{Name: "CONTROL_PLANE_SESSION_ID", Value: j.ID},
+								{Name: "CONTROL_PLANE_SESSION_ID", Value: j.SessionString()},
 							},
 							EnvFrom: envFromSecrets(l.cfg.EnvFromSecrets),
 							Resources: corev1.ResourceRequirements{
@@ -173,6 +187,8 @@ func runConfigTimeoutSeconds(runConfigJSON string) (int64, error) {
 	}
 	return int64(rc.GetTimeout()), nil
 }
+
+func ptrTo[T any](v T) *T { return &v }
 
 func envFromSecrets(names []string) []corev1.EnvFromSource {
 	if len(names) == 0 {

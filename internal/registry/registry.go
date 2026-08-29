@@ -69,6 +69,17 @@ func (r *Registry) Send(jobID string, ev *harnessv1.ControlEvent) error {
 	return s.Send(ev)
 }
 
+// JobIDs returns the IDs of all jobs with live sessions.
+func (r *Registry) JobIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.m))
+	for id := range r.m {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Connected reports whether a live session exists for the job.
 func (r *Registry) Connected(jobID string) bool {
 	r.mu.Lock()

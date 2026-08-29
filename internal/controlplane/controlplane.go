@@ -115,9 +115,15 @@ func New(st store.Store, reg *registry.Registry, opts ...Option) *Handler {
 	return h
 }
 
+// MaxEventBytes caps a single received HarnessEvent message, bounding
+// memory per stream. Generous against stirrup's own 4 MiB batch-result
+// ceiling; tool results larger than this indicate a broken harness.
+const MaxEventBytes = 4 << 20
+
 // NewHTTPHandler returns the connect route path and handler for
 // stirrup.harness.v1.HarnessService, ready to mount on hairpin's h2c mux.
 func (h *Handler) NewHTTPHandler(opts ...connect.HandlerOption) (string, http.Handler) {
+	opts = append([]connect.HandlerOption{connect.WithReadMaxBytes(MaxEventBytes)}, opts...)
 	return harnessv1connect.NewHarnessServiceHandler(h, opts...)
 }
 
@@ -170,7 +176,7 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 		return nil
 	}
 
-	jobID := first.GetId()
+	jobID, token := job.ParseSession(first.GetId())
 	if jobID == "" {
 		h.log.Warn("harness ready event carried no session id", "harness_version", first.GetHarnessVersion())
 		h.sendCancel(s, "")
@@ -180,6 +186,14 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	j, err := h.store.GetJob(ctx, jobID)
 	if err != nil {
 		h.log.Warn("harness claimed unknown job", "job_id", jobID, "error", err)
+		h.sendCancel(s, jobID)
+		return nil
+	}
+
+	// The session string is the bearer credential: job IDs alone are
+	// guessable (time-ordered ULIDs, visible in pod names and URLs).
+	if !j.AcceptsToken(token) {
+		h.log.Warn("harness presented wrong session token", "job_id", jobID)
 		h.sendCancel(s, jobID)
 		return nil
 	}

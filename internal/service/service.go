@@ -77,8 +77,20 @@ func New(st store.Store, reg *registry.Registry, l launcher.Launcher, profiles *
 // that offer a profile picker.
 func (s *Service) Profiles() *Profiles { return s.profiles }
 
+// checkID rejects IDs that never came from NewID before they reach
+// store-key construction.
+func checkID(id string) error {
+	if !job.ValidID(id) {
+		return fmt.Errorf("malformed job id %q: %w", id, ErrInvalidArgument)
+	}
+	return nil
+}
+
 // Get returns one job, or ErrNotFound.
 func (s *Service) Get(ctx context.Context, id string) (*job.Job, error) {
+	if err := checkID(id); err != nil {
+		return nil, err
+	}
 	return s.store.GetJob(ctx, id)
 }
 
@@ -90,6 +102,9 @@ func (s *Service) List(ctx context.Context, limit int, pageToken string) ([]*job
 
 // ListPermissions returns a job's permission requests, pending first.
 func (s *Service) ListPermissions(ctx context.Context, jobID string) ([]store.PermissionRequest, error) {
+	if err := checkID(jobID); err != nil {
+		return nil, err
+	}
 	return s.store.ListPermissions(ctx, jobID)
 }
 
@@ -105,6 +120,9 @@ func (s *Service) WaitForLaunches() { s.launches.Wait() }
 // later is cancelled by the control plane instead of being assigned
 // work. Cancelling a terminal job is a no-op.
 func (s *Service) Cancel(ctx context.Context, id string) (*job.Job, error) {
+	if err := checkID(id); err != nil {
+		return nil, err
+	}
 	j, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return nil, err
@@ -162,12 +180,30 @@ func (s *Service) cancelUnassigned(ctx context.Context, id string) (*job.Job, er
 // decision onto the job's live harness stream. The decision is recorded
 // only once the harness has accepted it.
 func (s *Service) AnswerPermission(ctx context.Context, jobID, requestID string, allow bool, reason string) (store.PermissionRequest, error) {
+	if err := checkID(jobID); err != nil {
+		return store.PermissionRequest{}, err
+	}
 	p, err := s.store.GetPermission(ctx, jobID, requestID)
 	if err != nil {
 		return store.PermissionRequest{}, err
 	}
 	if p.State != store.PermissionPending {
 		return store.PermissionRequest{}, fmt.Errorf("permission %s is already %s: %w", requestID, p.State, ErrInvalidArgument)
+	}
+
+	// Record the decision before delivering it: a persist-after-send
+	// failure would leave a request that already took effect harness-side
+	// looking pending and answerable again. If delivery then fails, the
+	// record reverts so the operator can retry.
+	answered := p
+	answered.State = store.PermissionAllowed
+	if !allow {
+		answered.State = store.PermissionDenied
+	}
+	answered.Reason = reason
+	answered.AnsweredAt = time.Now().UTC()
+	if err := s.store.PutPermission(ctx, jobID, answered); err != nil {
+		return store.PermissionRequest{}, err
 	}
 
 	err = s.registry.Send(jobID, &harnessv1.ControlEvent{
@@ -177,22 +213,15 @@ func (s *Service) AnswerPermission(ctx context.Context, jobID, requestID string,
 		Reason:    reason,
 	})
 	if err != nil {
+		if revertErr := s.store.PutPermission(ctx, jobID, p); revertErr != nil {
+			s.log.Error("failed to revert unanswered permission", "job", jobID, "request", requestID, "err", revertErr)
+		}
 		if errors.Is(err, registry.ErrNotConnected) {
 			return store.PermissionRequest{}, fmt.Errorf("job %s has no live harness to answer permission %s: %w", jobID, requestID, ErrNotConnected)
 		}
 		return store.PermissionRequest{}, fmt.Errorf("send permission response for job %s: %w", jobID, err)
 	}
-
-	p.State = store.PermissionAllowed
-	if !allow {
-		p.State = store.PermissionDenied
-	}
-	p.Reason = reason
-	p.AnsweredAt = time.Now().UTC()
-	if err := s.store.PutPermission(ctx, jobID, p); err != nil {
-		return store.PermissionRequest{}, err
-	}
-	return p, nil
+	return answered, nil
 }
 
 // statusPayload is the JSON body of a status_change event.

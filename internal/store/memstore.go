@@ -132,10 +132,13 @@ func (m *memStore) AppendEvent(_ context.Context, jobID string, ev Event) (strin
 		evs = evs[len(evs)-m.maxLen:]
 	}
 	m.events[jobID] = evs
+	// Non-blocking: a stalled watcher loses events rather than wedging
+	// the store mutex for every other caller. The buffer is sized to the
+	// full timeline cap, so this only trips on a pathological consumer.
 	for _, w := range m.watchers[jobID] {
 		select {
 		case w.ch <- ev:
-		case <-w.ctx.Done():
+		default:
 		}
 	}
 	return ev.ID, nil

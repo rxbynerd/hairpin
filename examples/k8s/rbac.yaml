@@ -17,12 +17,11 @@ rules:
   - apiGroups: ["batch"]
     resources:
       - jobs
+    # hairpin only creates Jobs today; get supports idempotent retry
+    # diagnostics. Add list/watch/delete when a reaper lands.
     verbs:
       - create
       - get
-      - list
-      - watch
-      - delete
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 
 	"github.com/rxbynerd/hairpin/internal/job"
@@ -78,7 +79,30 @@ func New(svc Service, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("POST /jobs/{id}/cancel", h.cancel)
 	mux.HandleFunc("POST /jobs/{id}/permissions/{requestID}", h.answerPermission)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticSub)))
-	return &notFoundInterceptor{next: mux, h: h}
+	return protectUI(&notFoundInterceptor{next: mux, h: h})
+}
+
+// protectUI adds browser-side hardening: standard response headers, and
+// a same-origin check on state-changing requests. The UI carries no
+// auth of its own (see docs/design.md), so when a deployment fronts it
+// with cookie-based SSO, a cross-site form post would otherwise ride
+// that cookie straight into submit/cancel/approve.
+func protectUI(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hdr := w.Header()
+		hdr.Set("X-Frame-Options", "DENY")
+		hdr.Set("X-Content-Type-Options", "nosniff")
+		hdr.Set("Content-Security-Policy", "default-src 'self'")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				if u, err := url.Parse(origin); err != nil || u.Host != r.Host {
+					http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func parsePage(name string) *template.Template {

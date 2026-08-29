@@ -68,6 +68,7 @@ func testTemplate() *harnessv1.RunConfig {
 		Mode:     "planning",
 		Provider: &harnessv1.ProviderConfig{Type: "anthropic"},
 		MaxTurns: 20,
+		Executor: &harnessv1.ExecutorConfig{Type: "local"},
 		Timeout:  proto.Int32(600),
 	}
 }
@@ -172,6 +173,7 @@ func TestSubmitExplicitRunConfigJSON(t *testing.T) {
 		Prompt:   "from the config",
 		Provider: &harnessv1.ProviderConfig{Type: "anthropic"},
 		MaxTurns: 5,
+		Executor: &harnessv1.ExecutorConfig{Type: "local"},
 		Timeout:  proto.Int32(60),
 		RunId:    "caller-supplied",
 	})
@@ -206,6 +208,7 @@ func TestSubmitPromptOverridesRunConfigPrompt(t *testing.T) {
 		Prompt:   "config prompt",
 		Provider: &harnessv1.ProviderConfig{Type: "anthropic"},
 		MaxTurns: 5,
+		Executor: &harnessv1.ExecutorConfig{Type: "local"},
 		Timeout:  proto.Int32(60),
 	})
 	if err != nil {
@@ -406,7 +409,7 @@ func TestCancelIsIdempotentOnTerminalJobs(t *testing.T) {
 
 func TestCancelUnknownJob(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.svc.Cancel(context.Background(), "hp-nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := f.svc.Cancel(context.Background(), "hp-00000000000000000000000000"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
 }
@@ -598,7 +601,7 @@ func TestWatchResumesAfterCursor(t *testing.T) {
 
 func TestWatchUnknownJob(t *testing.T) {
 	f := newFixture(t)
-	if _, err := f.svc.Watch(context.Background(), "hp-nope", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := f.svc.Watch(context.Background(), "hp-00000000000000000000000000", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
 }

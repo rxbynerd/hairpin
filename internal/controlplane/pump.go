@@ -32,6 +32,8 @@ type eventPump struct {
 
 	lastEventAt    time.Time
 	lastEventFlush time.Time
+
+	permissionsSeen int
 }
 
 func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventPump {
@@ -173,7 +175,19 @@ func (p *eventPump) append(ev store.Event) {
 	}
 }
 
+// maxPermissionRequests bounds the per-job permission hash: the request
+// IDs are harness-controlled, and unlike the event stream the hash has
+// no MAXLEN. A legitimate run answers requests one tool call at a time
+// and stays far below this.
+const maxPermissionRequests = 1000
+
 func (p *eventPump) putPermission(ev *harnessv1.HarnessEvent, at time.Time) {
+	if p.permissionsSeen >= maxPermissionRequests {
+		p.h.log.Warn("permission request cap reached; not persisting",
+			"job_id", p.jobID, "request_id", ev.GetRequestId())
+		return
+	}
+	p.permissionsSeen++
 	req := store.PermissionRequest{
 		RequestID:   ev.GetRequestId(),
 		ToolName:    ev.GetToolName(),
@@ -223,6 +237,9 @@ func (p *eventPump) finish(ev *harnessv1.HarnessEvent, at time.Time) {
 	errMsg := p.errMessage
 
 	if _, err := p.h.store.UpdateJob(p.ctx, p.jobID, func(j *job.Job) error {
+		if j.Status.Terminal() {
+			return errNoUpdate
+		}
 		j.Status = status
 		j.StopReason = stopReason
 		if errMsg != "" {
@@ -233,6 +250,9 @@ func (p *eventPump) finish(ev *harnessv1.HarnessEvent, at time.Time) {
 		j.LastEventAt = at
 		return nil
 	}); err != nil {
+		if errors.Is(err, errNoUpdate) {
+			return
+		}
 		p.h.log.Error("failed to finalise job", "job_id", p.jobID, "error", err)
 	}
 	p.appendProto(ev, at)

@@ -57,7 +57,7 @@ func (p *Process) Launch(ctx context.Context, j *job.Job) error {
 
 	env := []string{
 		"CONTROL_PLANE_ADDR=" + p.advertiseAddr,
-		"CONTROL_PLANE_SESSION_ID=" + j.ID,
+		"CONTROL_PLANE_SESSION_ID=" + j.SessionString(),
 	}
 	if p.cfg.InheritEnv {
 		env = append(os.Environ(), env...)

@@ -50,6 +50,7 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 		Profile:       profile,
 		RunConfigJSON: string(runConfigJSON),
 		CreatedAt:     time.Now().UTC(),
+		HarnessToken:  job.NewHarnessToken(),
 	}
 	if err := s.store.CreateJob(ctx, j); err != nil {
 		return nil, err
@@ -111,6 +112,13 @@ func validateRunConfig(cfg *harnessv1.RunConfig) error {
 	}
 	if t := cfg.GetTimeout(); t < 1 || t > 3600 {
 		return fmt.Errorf("run config timeout must be 1-3600 seconds, got %d: %w", t, ErrInvalidArgument)
+	}
+	// An omitted executor silently defaults to "local" harness-side —
+	// the agent's shell commands would run directly in the harness pod.
+	// Require the operator to make that choice explicitly (in the
+	// profile or the submitted config); stirrup validates the value.
+	if cfg.GetExecutor().GetType() == "" {
+		return fmt.Errorf("run config executor.type is required (local, container, k8s, k8s-sandbox, api, none): %w", ErrInvalidArgument)
 	}
 	return nil
 }

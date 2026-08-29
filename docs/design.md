@@ -95,6 +95,17 @@ run it on a trusted network (cluster-internal Service, mesh mTLS). The
 JobService API and web UI carry no authentication yet either — front
 them with your ingress's auth. Do not expose either port publicly.
 
+Within that posture, harness streams are still not trusted on job ID
+alone: submission mints a per-job bearer token, launchers pass
+`<job id>.<token>` as `CONTROL_PLANE_SESSION_ID`, and the control plane
+rejects a `ready` whose token does not match (constant-time). Job IDs
+are time-ordered ULIDs visible in pod names and URLs; without the token
+a neighbouring pod could claim another job's stream and read its
+RunConfig. Both connect services cap received messages at 4 MiB,
+permission requests are capped per job, the web UI enforces same-origin
+on state-changing requests, and shutdown cancels live runs so restarts
+do not strand jobs in `running`.
+
 ## Deliberately deferred (v1 scope cuts)
 
 - Follow-up turns (`followUpGrace` / `user_response`) — single run per job.

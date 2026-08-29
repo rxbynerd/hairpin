@@ -115,6 +115,13 @@ message SubmitJobRequest {
 
 message SubmitJobResponse {
   Job job = 1;
+  // The value a harness must present as CONTROL_PLANE_SESSION_ID to
+  // claim this job: "<job id>.<secret token>". Hairpin's launchers
+  // inject it automatically; it is surfaced here only for the "none"
+  // launcher, where the operator starts `stirrup job` out-of-band.
+  // Treat it as a bearer credential — it is deliberately absent from
+  // Job and every other RPC.
+  string harness_session = 2;
 }
 
 message GetJobRequest {

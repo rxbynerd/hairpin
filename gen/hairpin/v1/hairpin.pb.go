@@ -309,10 +309,17 @@ func (x *SubmitJobRequest) GetRunConfigJson() string {
 }
 
 type SubmitJobResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Job   *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	// The value a harness must present as CONTROL_PLANE_SESSION_ID to
+	// claim this job: "<job id>.<secret token>". Hairpin's launchers
+	// inject it automatically; it is surfaced here only for the "none"
+	// launcher, where the operator starts `stirrup job` out-of-band.
+	// Treat it as a bearer credential — it is deliberately absent from
+	// Job and every other RPC.
+	HarnessSession string `protobuf:"bytes,2,opt,name=harness_session,json=harnessSession,proto3" json:"harness_session,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SubmitJobResponse) Reset() {
@@ -350,6 +357,13 @@ func (x *SubmitJobResponse) GetJob() *Job {
 		return x.Job
 	}
 	return nil
+}
+
+func (x *SubmitJobResponse) GetHarnessSession() string {
+	if x != nil {
+		return x.HarnessSession
+	}
+	return ""
 }
 
 type GetJobRequest struct {
@@ -1134,9 +1148,10 @@ const file_hairpin_v1_hairpin_proto_rawDesc = "" +
 	"\x10SubmitJobRequest\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x18\n" +
 	"\aprofile\x18\x02 \x01(\tR\aprofile\x12&\n" +
-	"\x0frun_config_json\x18\x03 \x01(\tR\rrunConfigJson\"6\n" +
+	"\x0frun_config_json\x18\x03 \x01(\tR\rrunConfigJson\"_\n" +
 	"\x11SubmitJobResponse\x12!\n" +
-	"\x03job\x18\x01 \x01(\v2\x0f.hairpin.v1.JobR\x03job\"\x1f\n" +
+	"\x03job\x18\x01 \x01(\v2\x0f.hairpin.v1.JobR\x03job\x12'\n" +
+	"\x0fharness_session\x18\x02 \x01(\tR\x0eharnessSession\"\x1f\n" +
 	"\rGetJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"3\n" +
 	"\x0eGetJobResponse\x12!\n" +

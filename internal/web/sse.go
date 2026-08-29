@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -78,11 +79,21 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sseTypeRe matches event types safe to place on an SSE "event:" line.
+// Harness-supplied types outside it (or containing line breaks, which
+// would forge frames) are demoted to a fixed name; the real type is
+// still inside the JSON payload.
+var sseTypeRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+
 // writeSSEEvent writes one store.Event in SSE wire format. Multi-line
 // payloads are split across repeated "data:" lines per the SSE spec.
 func writeSSEEvent(w http.ResponseWriter, ev store.Event) {
+	typ := ev.Type
+	if !sseTypeRe.MatchString(typ) {
+		typ = "unknown"
+	}
 	fmt.Fprintf(w, "id: %s\n", ev.ID)
-	fmt.Fprintf(w, "event: %s\n", ev.Type)
+	fmt.Fprintf(w, "event: %s\n", typ)
 	payload := ev.PayloadJSON
 	if payload == "" {
 		payload = "{}"

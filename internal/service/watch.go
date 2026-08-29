@@ -18,6 +18,9 @@ const historyPage = 500
 // done, or on store failure — so callers can range over it without a
 // separate completion signal.
 func (s *Service) Watch(ctx context.Context, id, afterID string) (<-chan store.Event, error) {
+	if err := checkID(id); err != nil {
+		return nil, err
+	}
 	j, err := s.store.GetJob(ctx, id)
 	if err != nil {
 		return nil, err
@@ -26,13 +29,18 @@ func (s *Service) Watch(ctx context.Context, id, afterID string) (<-chan store.E
 		return s.replay(ctx, id, afterID), nil
 	}
 
-	src, err := s.store.WatchEvents(ctx, id, afterID)
+	// A dedicated context releases the store watch as soon as this
+	// wrapper stops (terminal event), not when the caller's ctx ends.
+	wctx, wcancel := context.WithCancel(ctx)
+	src, err := s.store.WatchEvents(wctx, id, afterID)
 	if err != nil {
+		wcancel()
 		return nil, err
 	}
 	out := make(chan store.Event)
 	go func() {
 		defer close(out)
+		defer wcancel()
 		for ev := range src {
 			select {
 			case out <- ev:
