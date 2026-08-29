@@ -36,15 +36,21 @@ import (
 )
 
 func run(args []string) error {
-	if len(args) < 1 || args[0] != "serve" {
-		return fmt.Errorf("usage: hairpin serve [flags]")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: hairpin <serve|keygen> [flags]")
 	}
-
-	cfg, err := parseServeFlags(args[1:])
-	if err != nil {
-		return err
+	switch args[0] {
+	case "serve":
+		cfg, err := parseServeFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		return serve(cfg)
+	case "keygen":
+		return runKeygen(args[1:])
+	default:
+		return fmt.Errorf("usage: hairpin <serve|keygen> [flags]")
 	}
-	return serve(cfg)
 }
 
 func parseServeFlags(args []string) (*config.Config, error) {
