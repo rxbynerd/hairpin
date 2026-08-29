@@ -39,8 +39,11 @@ type eventPump struct {
 func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventPump {
 	now := h.now()
 	return &eventPump{
-		h:              h,
-		ctx:            ctx,
+		h: h,
+		// Detached from stream cancellation: the harness closes its
+		// stream the instant it has sent done, and a terminal write (or
+		// any recorded event) racing that teardown must still land.
+		ctx:            context.WithoutCancel(ctx),
 		jobID:          jobID,
 		sess:           sess,
 		lastEventAt:    now,
@@ -54,9 +57,9 @@ func (p *eventPump) run() error {
 		if err != nil {
 			p.flushDeltas()
 			// The stream is gone but the record must still reach a
-			// terminal state, even when the recv error is hairpin
-			// shutting down.
-			p.closeUnfinished(context.WithoutCancel(p.ctx))
+			// terminal state (p.ctx is already detached from stream and
+			// shutdown cancellation).
+			p.closeUnfinished(p.ctx)
 			if isStreamEnd(err) {
 				p.h.log.Info("harness stream ended", "job_id", p.jobID, "error", err)
 				return nil
@@ -112,6 +115,10 @@ func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 	case evError:
 		p.errMessage = ev.GetMessage()
 		p.h.log.Warn("harness reported error", "job_id", p.jobID, "message", ev.GetMessage())
+		p.appendProto(ev, now)
+
+	case evWarning:
+		p.h.log.Info("harness warning", "job_id", p.jobID, "message", ev.GetMessage())
 		p.appendProto(ev, now)
 
 	case evSandboxTokenRequest:

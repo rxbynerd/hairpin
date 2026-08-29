@@ -196,10 +196,15 @@ func TestFullLoop(t *testing.T) {
 		t.Errorf("reason = %q", decision.Reason)
 	}
 
-	// Finish the run.
+	// Finish the run and half-close immediately, as a real `stirrup job`
+	// does on exit. (Not CloseResponse: that is an RST_STREAM cancel,
+	// which may discard the in-flight done frame — a teardown no real
+	// harness performs. The write-vs-teardown race is covered
+	// deterministically in the controlplane package.)
 	if err := stream.Send(&harnessv1.HarnessEvent{Type: "done", StopReason: "success"}); err != nil {
 		t.Fatalf("send done: %v", err)
 	}
+	_ = stream.CloseRequest()
 	final := waitForStatus(t, jobs, jobID, hairpinv1.JobStatus_JOB_STATUS_SUCCEEDED)
 	if final.StopReason != "success" {
 		t.Errorf("stop_reason = %q", final.StopReason)
@@ -207,7 +212,6 @@ func TestFullLoop(t *testing.T) {
 	if final.FinalText != "Looking at the diff now." {
 		t.Errorf("final_text = %q", final.FinalText)
 	}
-	_ = stream.CloseRequest()
 
 	// WatchJob replays the full timeline and terminates on its own.
 	watch, err := jobs.WatchJob(ctx, connect.NewRequest(&hairpinv1.WatchJobRequest{Id: jobID}))

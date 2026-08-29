@@ -31,6 +31,7 @@ const (
 	evHeartbeat           = "heartbeat"
 	evPermissionRequest   = "permission_request"
 	evError               = "error"
+	evWarning             = "warning"
 	evDone                = "done"
 	evSandboxTokenRequest = "sandbox_token_request"
 	evBatchSubmission     = "batch_submission"

@@ -75,6 +75,8 @@ func (p *Process) Launch(ctx context.Context, j *job.Job) error {
 		return fmt.Errorf("launcher: start harness process: %w", err)
 	}
 
+	p.logger.Info("launcher: harness process started",
+		"job_id", j.ID, "pid", cmd.Process.Pid, "workdir", workDir)
 	go p.reap(cmd, j.ID, stdout, stderr)
 	return nil
 }
