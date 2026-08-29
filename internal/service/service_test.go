@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -152,6 +154,24 @@ func TestSubmitResolvesProfileAndLaunches(t *testing.T) {
 	assertStatusEvents(t, f.store, j.ID, "queued", "launching", "awaiting_harness")
 }
 
+func TestSubmitRepoScopeFlowsToJob(t *testing.T) {
+	f := newFixture(t)
+	scope := []string{"github.com/rxbynerd/*", "github.com/rxbynerd-forks/hairpin"}
+	j := f.submitted(t, SubmitParams{Prompt: "audit the config", RepoScope: scope})
+
+	if !slices.Equal(j.RepoScope, scope) {
+		t.Errorf("RepoScope = %v, want %v", j.RepoScope, scope)
+	}
+
+	got, err := f.store.GetJob(context.Background(), j.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !slices.Equal(got.RepoScope, scope) {
+		t.Errorf("stored RepoScope = %v, want %v", got.RepoScope, scope)
+	}
+}
+
 func TestSubmitProfileTemplateIsNotMutated(t *testing.T) {
 	f := newFixture(t)
 	f.submitted(t, SubmitParams{Prompt: "first"})
@@ -269,6 +289,21 @@ func TestSubmitValidationFailures(t *testing.T) {
 			"timeout out of range",
 			SubmitParams{RunConfigJSON: valid(func(c *harnessv1.RunConfig) { c.Timeout = proto.Int32(9999) })},
 			"timeout must be 1-3600",
+		},
+		{
+			"repo scope entry empty",
+			SubmitParams{Prompt: "x", RepoScope: []string{"github.com/rxbynerd/*", ""}},
+			"repo_scope entries must not be empty",
+		},
+		{
+			"repo scope entry has whitespace",
+			SubmitParams{Prompt: "x", RepoScope: []string{"github.com/rxbynerd/ *"}},
+			"must not contain whitespace",
+		},
+		{
+			"repo scope too many entries",
+			SubmitParams{Prompt: "x", RepoScope: make([]string, maxRepoScopeEntries+1)},
+			fmt.Sprintf("max %d", maxRepoScopeEntries),
 		},
 	}
 

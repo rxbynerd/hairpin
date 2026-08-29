@@ -116,6 +116,35 @@ func TestSubmitAndGetJob(t *testing.T) {
 	}
 }
 
+func TestSubmitJobRepoScope(t *testing.T) {
+	h := newHarness(t)
+	resp, err := h.client.SubmitJob(context.Background(), connect.NewRequest(&hairpinv1.SubmitJobRequest{
+		Prompt:    "check the logs",
+		RepoScope: []string{"github.com/rxbynerd/*"},
+	}))
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	h.svc.WaitForLaunches()
+
+	got, err := h.store.GetJob(context.Background(), resp.Msg.GetJob().GetId())
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if want := []string{"github.com/rxbynerd/*"}; len(got.RepoScope) != 1 || got.RepoScope[0] != want[0] {
+		t.Errorf("RepoScope = %v, want %v", got.RepoScope, want)
+	}
+}
+
+func TestSubmitJobRepoScopeInvalid(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.client.SubmitJob(context.Background(), connect.NewRequest(&hairpinv1.SubmitJobRequest{
+		Prompt:    "x",
+		RepoScope: []string{""},
+	}))
+	assertCode(t, err, connect.CodeInvalidArgument)
+}
+
 func TestSubmitJobInvalidArgument(t *testing.T) {
 	h := newHarness(t)
 	_, err := h.client.SubmitJob(context.Background(), connect.NewRequest(&hairpinv1.SubmitJobRequest{Profile: "nope", Prompt: "x"}))

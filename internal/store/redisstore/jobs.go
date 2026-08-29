@@ -2,6 +2,7 @@ package redisstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -35,6 +36,7 @@ func jobSetFields(j *job.Job) map[string]any {
 		"cancel_requested": boolField(j.CancelRequested),
 		"harness_token":    j.HarnessToken,
 		"trace_parent":     j.TraceParent,
+		"repo_scope":       repoScopeField(j.RepoScope),
 	}
 	if !j.CreatedAt.IsZero() {
 		f["created_at"] = j.CreatedAt.Format(time.RFC3339Nano)
@@ -77,6 +79,17 @@ func boolField(b bool) string {
 	return "0"
 }
 
+// repoScopeField encodes a job's repo scope as a JSON array, or "" for
+// an empty scope so the hash field stays absent-looking.
+func repoScopeField(scope []string) string {
+	if len(scope) == 0 {
+		return ""
+	}
+	// []string of already-validated entries: encoding cannot fail.
+	b, _ := json.Marshal(scope)
+	return string(b)
+}
+
 func jobFromFields(fields map[string]string) (*job.Job, error) {
 	j := &job.Job{
 		ID:              fields["id"],
@@ -90,6 +103,11 @@ func jobFromFields(fields map[string]string) (*job.Job, error) {
 		CancelRequested: fields["cancel_requested"] == "1",
 		HarnessToken:    fields["harness_token"],
 		TraceParent:     fields["trace_parent"],
+	}
+	if v := fields["repo_scope"]; v != "" {
+		if err := json.Unmarshal([]byte(v), &j.RepoScope); err != nil {
+			return nil, fmt.Errorf("field repo_scope: %w", err)
+		}
 	}
 	var err error
 	for name, dst := range map[string]*time.Time{
