@@ -57,7 +57,10 @@ just kind-down
 
 `just deploy` also installs a development-only stand-in model provider
 (`scripts/dev/fake-provider.yaml`) so a run completes without an API
-key or any egress from the cluster.
+key or any egress from the cluster. To run against a real model, `just
+openrouter <op-ref>` adds an OpenRouter-backed `openrouter` profile,
+reading the API key from 1Password; submit with
+`{"profile": "openrouter"}`. Re-run it after each `just deploy`.
 
 For a real cluster, apply [`examples/k8s/`](examples/k8s/) and supply
 your own provider Secret. An in-cluster hairpin needs almost no

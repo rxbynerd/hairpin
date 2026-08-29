@@ -51,6 +51,81 @@ current: check items off as they land, add discoveries.
       NetworkPolicy in hairpin-sandboxes → run_command via pods/exec as uid
       65532 → SUCCEEDED, both torn down at end of run.
 
+## Wave 5 — real-model verification (done, 9c03430)
+- [x] End-to-end against a real model: `scripts/dev/openrouter.sh` / `just
+      openrouter <op-ref>` wires an OpenRouter key (1Password) into
+      provider-api-keys plus an "openrouter" profile
+      (openai-compatible → https://openrouter.ai/api/v1,
+      google/gemini-3.7-flash). Two live jobs ran the full agentic loop
+      (multi-turn run_command in the sandbox) to JOB_STATUS_SUCCEEDED.
+- [x] Gotchas: profiles load once at startup, so a ConfigMap patch needs a
+      hairpin restart; deploy.sh recreates the Secret and profiles ConfigMap,
+      so re-run openrouter.sh after every deploy; a kubectl port-forward goes
+      stale across a rollout restart.
+
+## Wave 6 — Haybale: sandbox git access (BLOCKED: no GitHub App credentials yet)
+haybale (~/Developer/haybale) is an authenticating reverse proxy for Git
+smart HTTP: the sandbox authenticates to haybale with a short-lived JWT,
+haybale checks a default-deny repo policy and swaps in a per-request
+GitHub App installation token; the upstream credential never reaches the
+sandbox. Stirrup's wire contract already supports the whole flow — no
+stirrup changes needed:
+- `executor.sandbox_identity {source: "control-plane", audience, env_var}`:
+  after task assignment and before sandbox creation the harness sends
+  `sandbox_token_request` and blocks fail-closed up to 60s for
+  `sandbox_token_response`; the JWT is injected into the sandbox env
+  (default `HAYBALE_TOKEN`) and never enters RunConfig or traces. Wire
+  contract: stirrup docs/deployment.md#sandbox-identity-token-issuance.
+- `executor.git_proxy {url, hosts, rewrite_ssh, token_env_var}`: composes
+  non-secret GIT_CONFIG_* env rewriting e.g. github.com through haybale.
+  In allowlist network mode the proxy host:port must be in
+  network.allowlist.
+
+Jobs to be done:
+- [ ] hairpin as JWT issuer: signing key (ES256), JWKS served over HTTP for
+      haybale's `jwksURL`, per-run token (sub = run identity, short TTL,
+      aud from config), answer `sandbox_token_response` — replace the
+      explicit refusal in internal/controlplane (pump.go
+      refuseSandboxToken / sandboxTokenRefusal).
+- [ ] Decide the repo-scope surface: haybale narrows YAML policy with a
+      `repoScopeClaim` (e.g. haybale.dev/repos) — probably a profile field
+      and/or SubmitJobRequest addition, injected into the token.
+- [ ] Deploy haybale in-cluster: image + haybale.yaml + policy.yaml
+      manifests (examples/k8s or scripts/dev); default-deny policy keyed on
+      run identities. haybale has docs/stirrup-integration.md and a live
+      GitHub App acceptance runbook.
+- [ ] Profiles: executor.sandbox_identity + executor.git_proxy + network
+      mode "allowlist" with haybale's host:port.
+- [ ] BLOCKED on GitHub App credentials for the upstream side. Until then a
+      dev-cluster path exists: haybale supports static credentials for
+      non-GitHub hosts, so an in-cluster git host (e.g. gitea) could prove
+      the token flow end to end.
+
+## Wave 7 — Steeplechase: telemetry out of the cluster
+steeplechase (~/Developer/steeplechase) is a single-binary OTLP router:
+receives OTel metrics/logs/traces on :4317 (gRPC) / :4318 (HTTP), fans
+out to sinks (stdout, otlp+grpc/http/https, mqtt), admin/healthz/metrics
+on :9090, per-run grouped stdout keyed on run.id. Stirrup emits
+`stirrup.harness.*` metrics and a run/turn/tool_call span tree when
+RunConfig.trace_emitter = {type: "otel", endpoint, protocol, headers
+(secret:// resolved), capture_content}; its slog goes to stderr, not OTLP
+logs.
+
+Jobs to be done:
+- [ ] Deploy steeplechase in the hairpin namespace (Dockerfile in its
+      repo); dev-cluster default sink stdout so `kubectl logs` shows runs.
+- [ ] Wire stirrup runs to it: traceEmitter in profiles, or (matching the
+      sandbox-coordinate pattern) a hairpin `--telemetry-endpoint` flag
+      injected into submitted RunConfigs where the profile left it empty —
+      decide which; the harness Pod (hairpin ns) has open egress so no
+      NetworkPolicy change needed.
+- [ ] Instrument hairpin itself: no OTel exists in hairpin today — add
+      OTLP export (traces around submit/launch/control-plane stream,
+      metrics for job outcomes/durations) pointed at the same endpoint.
+- [ ] Out-of-cluster publishing: configure steeplechase --sink
+      (otlp+grpc://... or mqtt://...) at the external backend; secrets for
+      sink headers/passwords via its own Secret.
+
 ## Known deferrals (see docs/design.md "Deliberately deferred")
 Follow-ups, sandbox tokens (explicit refusal), batch, multi-replica, auth.
 

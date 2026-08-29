@@ -80,6 +80,16 @@ call and then finish, so a run completes with no API key and no egress
 from the cluster. It also replaces the `hairpin-profiles` ConfigMap so
 the default profile points at it. Development only.
 
+For a real-model run, `just openrouter <op-ref>` /
+[`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
+OpenRouter API key from 1Password (`op-ref` is a secret reference like
+`op://<vault>/<item>/credential`), merges it into the
+`provider-api-keys` Secret, adds an `openrouter` profile, and restarts
+hairpin — profiles are loaded once at startup. Submit with
+`{"profile": "openrouter", "prompt": "..."}`. `deploy.sh` recreates the
+Secret and profiles ConfigMap without these additions, so re-run the
+script after every deploy.
+
 The kind cluster installs no gVisor RuntimeClass, so sandbox Pods run
 under the cluster default runtime and the harness logs an isolation
 warning. Every other path — Job creation, the control-plane dial-back,
