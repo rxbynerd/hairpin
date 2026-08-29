@@ -3,8 +3,9 @@
 A minimal, applyable starting point for running hairpin on a cluster:
 hairpin itself, the three identities involved in a run, a bare-bones
 Redis, Billet for shared memory, steeplechase for the traces runs
-emit, the profiles hairpin serves, and a placeholder Secret for
-provider API keys.
+emit, the profiles hairpin serves, a placeholder Secret for provider
+API keys, and haybale, the git-credential proxy a sandbox reaches
+through hairpin's sandbox-identity token issuer.
 
 Full narrative, including the trust boundary the two namespaces draw
 and what the harness's RBAC is for, is in
@@ -21,8 +22,10 @@ and what the harness's RBAC is for, is in
 | `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only. |
 | `steeplechase.yaml` | Deployment + Service | The OTLP collector each run's `trace_emitter` points at, via hairpin's `--harness-telemetry-endpoint`. Ships with no `--sink`, so traces land on stdout — `kubectl -n hairpin logs deploy/steeplechase`. |
 | `profiles.yaml` | ConfigMap | RunConfig profile templates, mounted at `--profiles`. |
-| `hairpin.yaml` | Deployment + Service | hairpin itself. |
+| `hairpin.yaml` | Deployment + Service | hairpin itself, including the `--sandbox-token-*` flags that make it a JWT issuer for haybale. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
+| `sandbox-token.yaml` | Secret + ConfigMap | The signing keypair hairpin and haybale share: `key.pem` (hairpin, private) and `jwks.json` (haybale, public), generated together by `hairpin keygen`. Both are non-functional placeholders — see [Deploying haybale](#deploying-haybale). |
+| `haybale.yaml` | ConfigMap ×2 + Secret + Deployment + Service | haybale, wired to a dev-only in-cluster gitea upstream until GitHub App credentials are configured — see [Deploying haybale](#deploying-haybale). |
 | `kustomization.yaml` | Kustomization | Applies all reference resources with namespaces ordered first. |
 
 ## What to edit before applying
@@ -43,9 +46,20 @@ and what the harness's RBAC is for, is in
   file and `--harness-telemetry-endpoint` to run without run traces.
 - `profiles.yaml`: the `default` profile's model and permission
   policy, or add profiles of your own. The profile declares the memory
-  tools; a profile that omits them is opted out.
+  tools; a profile that omits them is opted out. The `git` profile needs
+  a real `haybale`/upstream host wired up (or drop it if you have no use
+  for proxied git access).
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
   other `secret://`-referenced keys your profiles need.
+- `sandbox-token.yaml` and `haybale.yaml`'s `haybale-gitea-token`
+  Secret: treat as **required**, not optional, if you apply
+  `hairpin.yaml` and `haybale.yaml` as they ship — `key.pem` is not a
+  real PEM, and hairpin's `--sandbox-token-key` is expected to reject an
+  unparseable key at startup the same way haybale itself fails fast on a
+  bad key or JWKS file. Generate a real pair with `hairpin keygen`, or
+  drop both `sandbox-token.yaml` and `haybale.yaml` and remove the
+  `--sandbox-token-*` flags from `hairpin.yaml` if you have no use for
+  proxied git access.
 
 The namespace and advertise address need no editing: hairpin reads its
 namespace from its projected ServiceAccount and advertises
@@ -116,6 +130,91 @@ The response carries the job ID; poll `GetJob` or open the web UI at
 For a throwaway cluster that needs no API key at all, see
 [`scripts/dev/`](../../scripts/dev/) — `just kind-up && just deploy &&
 just smoke-test`.
+
+## Deploying haybale
+
+haybale (docs at [`~/Developer/haybale`](https://github.com/rxbynerd/haybale)
+— a local, read-only checkout in this dev environment) is an
+authenticating reverse proxy for Git smart HTTP: a sandbox Pod
+authenticates to it with the short-lived JWT hairpin's
+`--sandbox-token-*` issuer minted for that run, haybale checks a
+default-deny policy, and swaps in an upstream credential the sandbox
+never sees.
+
+There is no published haybale image yet:
+
+```sh
+podman build -t localhost/haybale:dev <path-to-haybale-checkout>
+```
+
+`scripts/dev/haybale.sh` does this (and everything else below) for the
+kind development loop; the rest of this section is the manual/production
+path.
+
+1. Generate the shared signing keypair and replace both halves of
+   `sandbox-token.yaml`:
+
+   ```sh
+   ./hairpin keygen --out key.pem --jwks-out jwks.json
+   kubectl -n hairpin create secret generic hairpin-sandbox-token-key \
+     --from-file=key.pem=key.pem --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n hairpin create configmap haybale-jwks \
+     --from-file=jwks.json=jwks.json --dry-run=client -o yaml | kubectl apply -f -
+   ```
+
+   Rotating the key means repeating this and restarting **both**
+   `hairpin` (to sign with the new key) and `haybale` (to trust it) —
+   haybale reads `jwksFile` once at startup, with no hot reload.
+
+2. Point `haybale.yaml`'s upstream at a real git host and real
+   credentials. It ships wired to a dev-only in-cluster gitea using a
+   static token (see `scripts/dev/gitea.yaml`) because GitHub App
+   credentials are not available yet (blocked — see
+   [`TODO.md`](../../TODO.md) Wave 6); the file has a commented
+   `github-app` upstream block ready for when they are.
+
+3. Narrow `haybale.yaml`'s `haybale-policy` ConfigMap from the shipped
+   `hp-*` ceiling to the identities and repos your deployment actually
+   needs, and set a real `HAYBALE_GITEA_TOKEN` (or equivalent) via
+   `haybale.yaml`'s Secret.
+
+4. Give a profile `executor.sandboxIdentity` and `executor.gitProxy` —
+   see `profiles.yaml`'s `git` profile — so hairpin requests a token for
+   the run and the harness rewrites git traffic through haybale.
+
+### Network mode: a known gap, not a silent one
+
+The `git` profile ships with `executor.network.mode: "none"`, which is
+**not** the mode that is supposed to let a sandbox Pod reach haybale —
+it is a documented fallback for a non-NetworkPolicy-enforcing cluster.
+Reading stirrup's Kubernetes executor
+(`harness/internal/executor/k8s_netpol.go` in a stirrup checkout) shows
+why:
+
+- `mode: "none"` installs a genuine deny-all `NetworkPolicy` selecting
+  the sandbox Pod (`denyAllEgressPolicy`) — on a CNI that enforces
+  NetworkPolicy (Cilium, Calico, ...) this blocks *everything*,
+  including the in-cluster route to `haybale.hairpin.svc`, not just
+  external egress.
+- `mode: "allowlist"` is the mode actually designed for this, but it
+  requires deploying stirrup's own `stirrup-egress-proxy` — a separate
+  generic HTTP(S) CONNECT proxy, distinct from haybale — as its own
+  Deployment in the *sandbox* namespace (`hairpin-sandboxes`), plus a
+  namespace-scoped NetworkPolicy and an FQDN allowlist that would need
+  to include haybale's own address (see
+  `examples/k8s/egress-proxy/README.md` in the stirrup repo). That is a
+  second proxy hop in front of a purpose-built, already-authenticated
+  credential proxy — disproportionate for reaching one in-cluster
+  service, and stirrup's own dev/kind loop
+  (`stirrup/scripts/dev/`) does not exercise it either.
+
+So the `git` profile only reaches haybale today on a CNI that does not
+enforce NetworkPolicy — kind's default `kindnet` among them, which is
+why the kind development loop (`scripts/dev/kind-up.sh`) works. A
+NetworkPolicy-enforcing production cluster needs `allowlist` mode plus
+stirrup's `examples/k8s/egress-proxy/` manifests deployed alongside the
+sandbox namespace, with haybale's `host:port` in its allowlist —
+tracked as a follow-up in `TODO.md` Wave 6 rather than built here.
 
 ## Trust posture
 
