@@ -5,11 +5,12 @@ current: check items off as they land, add discoveries.
 
 ## Wave 0 — scaffold (main session)
 - [x] Study stirrup protocol + conventions (see docs/design.md)
-- [ ] Vendor proto/harness/v1/harness.proto from stirrup; write proto/hairpin/v1/hairpin.proto
-- [ ] buf.yaml / buf.gen.yaml (managed mode, connect-go), `just proto` generates into gen/
-- [ ] go.mod with all deps pre-resolved (subagents must NOT touch go.mod/go.sum)
-- [ ] internal/job types, Store interface + memstore, Launcher interface, registry
-- [ ] cmd/hairpin skeleton compiling end-to-end; Justfile; initial commits
+- [x] Vendor proto/harness/v1/harness.proto from stirrup; write proto/hairpin/v1/hairpin.proto
+- [x] buf.yaml / buf.gen.yaml (managed mode, connect-go), `just proto` generates into gen/
+- [x] go.mod with all deps pre-resolved (subagents must NOT touch go.mod/go.sum)
+- [x] internal/job types, Store interface + memstore, Launcher interface, registry
+- [x] cmd/hairpin skeleton compiling end-to-end; Justfile; initial commits (84feabe)
+- [x] Wave 1 dispatched: 5 parallel feature-implementers (redisstore, controlplane, service+api, launchers, web)
 
 ## Wave 1 — parallel implementation (subagents; disjoint package ownership)
 - [ ] internal/store/redisstore + miniredis tests (owner: redis-store agent)
