@@ -38,6 +38,10 @@ deploy:
 smoke-test:
     ./scripts/dev/smoke-test.sh
 
+# Wire an OpenRouter key (from 1Password) and profile into the cluster.
+openrouter op_ref="":
+    ./scripts/dev/openrouter.sh {{op_ref}}
+
 # Destroy the kind development cluster.
 kind-down:
     ./scripts/dev/kind-down.sh
