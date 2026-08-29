@@ -1,0 +1,156 @@
+# A stand-in model provider for the kind development cluster: it speaks
+# just enough of the OpenAI chat-completions SSE protocol to drive a
+# stirrup run without a real API key or any egress from the cluster.
+#
+# It answers every request the same way: the first turn calls
+# run_command in the sandbox, and once a tool result comes back it
+# closes with a final message. That is the shortest path that actually
+# exercises pods/exec inside a sandbox Pod.
+#
+# Development only. Point a profile's provider at
+# http://fake-provider.hairpin.svc:8080/v1.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-provider
+  namespace: hairpin
+data:
+  server.py: |
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    PROBE = "uname -sm; id; echo sandbox-ok"
+
+    def chunk(delta, finish=None):
+        return {
+            "id": "fake-1",
+            "object": "chat.completion.chunk",
+            "model": "fake-model",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+
+    def tool_call_turn():
+        args = json.dumps({"command": PROBE, "timeout": 30})
+        return [
+            chunk({"role": "assistant", "content": ""}),
+            chunk({"tool_calls": [{
+                "index": 0,
+                "id": "call_probe",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": args},
+            }]}),
+            chunk({}, "tool_calls"),
+        ]
+
+    def final_turn():
+        return [
+            chunk({"role": "assistant", "content": ""}),
+            chunk({"content": "Sandbox probe complete."}),
+            chunk({}, "stop"),
+        ]
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            print("fake-provider: " + fmt % args, flush=True)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            request = json.loads(body or b"{}")
+            messages = request.get("messages", [])
+            saw_tool_result = any(m.get("role") == "tool" for m in messages)
+            chunks = final_turn() if saw_tool_result else tool_call_turn()
+            self.log_message("%d messages, tool result seen: %s", len(messages), saw_tool_result)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for c in chunks:
+                self.wfile.write(self.sse("data: " + json.dumps(c) + "\n\n"))
+            self.wfile.write(self.sse("data: [DONE]\n\n"))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+        def sse(self, payload):
+            raw = payload.encode()
+            return b"%x\r\n%s\r\n" % (len(raw), raw)
+
+    ThreadingHTTPServer(("", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-provider
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: fake-provider
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fake-provider
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fake-provider
+    spec:
+      containers:
+        - name: fake-provider
+          image: docker.io/library/python:3.13-alpine
+          command: ["python3", "/srv/server.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: server
+              mountPath: /srv
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: server
+          configMap:
+            name: fake-provider
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-provider
+  namespace: hairpin
+spec:
+  selector:
+    app.kubernetes.io/name: fake-provider
+  ports:
+    - port: 8080
+      targetPort: http
+---
+# The profile that points at it, overriding the default profile the
+# reference manifests ship.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hairpin-profiles
+  namespace: hairpin
+data:
+  default.json: |
+    {
+      "mode": "execution",
+      "provider": {
+        "type": "openai-compatible",
+        "baseUrl": "http://fake-provider.hairpin.svc:8080/v1",
+        "apiKeyRef": "secret://FAKE_API_KEY"
+      },
+      "modelRouter": {"type": "static", "model": "fake-model"},
+      "executor": {
+        "type": "k8s",
+        "network": {"mode": "none"}
+      },
+      "permissionPolicy": {"type": "allow-all"},
+      "maxTurns": 6,
+      "timeout": 300
+    }

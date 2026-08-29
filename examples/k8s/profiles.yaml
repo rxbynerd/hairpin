@@ -1,0 +1,33 @@
+# Named RunConfig templates, mounted at --profiles=/etc/hairpin/profiles.
+# A submit names one (or none, taking --default-profile) and supplies
+# only the prompt.
+#
+# The cluster coordinates of the executor are deliberately absent: a
+# profile names the isolation it wants, and hairpin fills in the sandbox
+# image, namespace, ServiceAccount, and RuntimeClassName from its
+# --sandbox-* flags at submit time.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hairpin-profiles
+  namespace: hairpin
+data:
+  default.json: |
+    {
+      "mode": "execution",
+      "provider": {
+        "type": "anthropic",
+        "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+      },
+      "modelRouter": {
+        "type": "static",
+        "model": "claude-sonnet-4-6-20250514"
+      },
+      "executor": {
+        "type": "k8s",
+        "network": {"mode": "none"}
+      },
+      "permissionPolicy": {"type": "ask-upstream", "timeout": 120},
+      "maxTurns": 20,
+      "timeout": 900
+    }

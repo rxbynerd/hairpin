@@ -23,5 +23,21 @@ sync-proto stirrup_dir="../stirrup":
     cp {{stirrup_dir}}/proto/harness/v1/harness.proto proto/harness/v1/harness.proto
     buf generate
 
+image tag="localhost/hairpin:dev":
+    podman build -t {{tag}} -f Containerfile .
+
+# Development cluster: create, deploy, exercise, destroy.
+kind-up:
+    ./scripts/dev/kind-up.sh
+
+deploy:
+    ./scripts/dev/deploy.sh
+
+smoke-test:
+    ./scripts/dev/smoke-test.sh
+
+kind-down:
+    ./scripts/dev/kind-down.sh
+
 clean:
     rm -f hairpin

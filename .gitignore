@@ -1,3 +1,4 @@
 /hairpin
 *.test
 .env*
+**/.claude/mind.mv2*

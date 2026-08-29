@@ -1,6 +1,18 @@
-# Namespace hairpin runs in, and the default namespace its k8s
-# launcher creates harness Jobs into (--k8s-namespace below).
+# Two namespaces, because two trust levels meet here.
+#
+# `hairpin` holds the server, its Redis, and the harness Jobs it
+# launches — all of it hairpin's own machinery.
+#
+# `hairpin-sandboxes` holds the Pods an agent's shell commands run
+# inside. Keeping them apart is what lets a sandbox Pod be denied a
+# route to Redis or to the control plane, and lets quotas and
+# NetworkPolicies target agent workloads without touching the server.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: hairpin
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hairpin-sandboxes

@@ -1,11 +1,12 @@
-# hairpin itself: the JobService API, web UI, and stirrup control
-# plane on one h2c port (internal/config.Config / cmd/hairpin/serve.go).
+# hairpin itself: the JobService API, web UI, and stirrup control plane
+# on one h2c port.
 #
-# Edit before applying:
-#   - spec.template.spec.containers[0].image — build and push a hairpin
-#     image, then point this at it.
-#   - --k8s-image — the stirrup image the launcher runs as harness Jobs.
-#   - --k8s-env-from-secrets — drop or rename if secret.yaml isn't used.
+# The image, namespace, and advertise address are all defaulted — an
+# in-cluster hairpin discovers its namespace from its projected
+# ServiceAccount and advertises hairpin.<namespace>.svc on its listen
+# port. What remains are the pieces only an operator can name: where
+# Redis is, which profiles to serve, and the identities the harness and
+# its sandboxes run as.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,25 +25,49 @@ spec:
         app.kubernetes.io/name: hairpin
     spec:
       serviceAccountName: hairpin
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: hairpin
           image: ghcr.io/rxbynerd/hairpin:latest
           args:
             - serve
-            - --listen=:8130
-            - --advertise=hairpin.hairpin.svc:8130
             - --redis=redis.hairpin.svc:6379
-            - --launcher=k8s
-            - --k8s-namespace=hairpin
-            - --k8s-image=ghcr.io/rxbynerd/stirrup:latest
-            - --k8s-env-from-secrets=provider-api-keys
+            - --profiles=/etc/hairpin/profiles
+            - --harness-service-account=stirrup-harness
+            - --harness-secrets=provider-api-keys
+            - --sandbox-namespace=hairpin-sandboxes
+            - --sandbox-service-account=stirrup-sandbox
           ports:
             - containerPort: 8130
               name: h2c
+          volumeMounts:
+            - name: profiles
+              mountPath: /etc/hairpin/profiles
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: h2c
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: h2c
           resources:
             requests:
               cpu: 100m
               memory: 128Mi
+      volumes:
+        - name: profiles
+          configMap:
+            name: hairpin-profiles
 ---
 apiVersion: v1
 kind: Service

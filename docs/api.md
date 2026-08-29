@@ -31,7 +31,7 @@ Request fields (`SubmitJobRequest`):
 |---|---|
 | `prompt` | The task prompt. Required unless `run_config_json` carries its own. |
 | `profile` | Named RunConfig profile to resolve against. Empty selects the server's default profile. Mutually exclusive with `run_config_json`. |
-| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form, used verbatim except `run_id` (forced to the job ID) and `prompt` (filled from this request's `prompt` when the config carries none). See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
+| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form, used verbatim except `run_id` (forced to the job ID), `prompt` (filled from this request's `prompt` when the config carries none), and an unset sandbox coordinate on a `k8s`/`k8s-sandbox` executor (filled from the server's `-sandbox-*` flags). See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
 
 ```sh
 curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
@@ -47,9 +47,8 @@ curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
 is the bearer credential a harness must present, as
 `CONTROL_PLANE_SESSION_ID` in the form `<job id>.<token>`, echoed back
 in its `ready` event's `id` field, to claim this job's stream; a bare
-job ID is rejected and the harness is sent `cancel`. The `process` and
-`k8s` launchers set `CONTROL_PLANE_SESSION_ID` to this value
-automatically — it matters to a caller only when starting a harness
+job ID is rejected and the harness is sent `cancel`. The Kubernetes
+launcher sets `CONTROL_PLANE_SESSION_ID` to this value automatically — it matters to a caller only when starting a harness
 out-of-band with `-launcher none`. Treat it as a secret: it appears
 exactly once, in this response, and is never included in `GetJob` /
 `ListJobs` output.
@@ -204,7 +203,7 @@ Every RPC maps internal errors onto connect codes (`internal/api/api.go`):
 | Status | Meaning |
 |---|---|
 | `JOB_STATUS_QUEUED` | Accepted and persisted; launcher not yet invoked. |
-| `JOB_STATUS_LAUNCHING` | Launcher invoked; the Kubernetes Job (or subprocess) is being created. |
+| `JOB_STATUS_LAUNCHING` | Launcher invoked; the harness Job is being created. |
 | `JOB_STATUS_AWAITING_HARNESS` | Harness started but has not yet dialled back in with `ready`. |
 | `JOB_STATUS_RUNNING` | `task_assignment` sent; the harness is executing. |
 | `JOB_STATUS_SUCCEEDED` | Terminal. `done.stop_reason` was `"success"`. |

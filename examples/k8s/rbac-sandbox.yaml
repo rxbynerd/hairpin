@@ -1,0 +1,70 @@
+# RBAC for the stirrup harness Pods hairpin launches, and the identity
+# their sandbox Pods run as.
+#
+# The harness is the orchestrator of stirrup's Kubernetes executor: it
+# creates one sandbox Pod per run, drives file I/O and command
+# execution through the pods/exec subresource, confines the Pod's
+# egress with a per-Pod NetworkPolicy, and deletes both at end of run.
+# Pass this ServiceAccount to hairpin as --harness-service-account so
+# its token is mounted into the harness Pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stirrup-harness
+  namespace: hairpin
+---
+# The Role lives in the sandbox namespace and is bound to a subject in
+# the hairpin namespace: the harness reaches across, and holds nothing
+# in its own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stirrup-sandbox-orchestrator
+  namespace: hairpin-sandboxes
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs:
+      - create
+      - get
+      - delete
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs:
+      - create
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    # The egress policy is installed before the Pod and removed with
+    # it. Without both verbs the executor fails closed at construction:
+    # a Pod whose egress cannot be confined must never be created.
+    verbs:
+      - create
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stirrup-sandbox-orchestrator
+  namespace: hairpin-sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: stirrup-harness
+    namespace: hairpin
+roleRef:
+  kind: Role
+  name: stirrup-sandbox-orchestrator
+  apiGroup: rbac.authorization.k8s.io
+---
+# The sandbox Pods themselves. Pass this to hairpin as
+# --sandbox-service-account. It is granted nothing and its token is
+# never mounted: the Pod runs untrusted agent commands and has no
+# business reaching the API server.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stirrup-sandbox
+  namespace: hairpin-sandboxes
+automountServiceAccountToken: false

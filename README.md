@@ -40,21 +40,37 @@ component breakdown.
 
 ## Quick start
 
+Hairpin is a Kubernetes application: it runs inside the cluster whose
+API it uses, launches each run as a `batch/v1` Job from the published
+stirrup harness image, and that harness in turn creates one sandbox Pod
+per run from the stirrup sandbox image. Nothing in the loop is a
+filesystem path to a binary.
+
+A development cluster, from nothing to a completed run:
+
 ```sh
-just build   # produces ./hairpin
+just kind-up      # a single-node kind cluster on podman
+just deploy       # build hairpin, load it, apply examples/k8s + a fake provider
+just smoke-test   # submit one job and assert it ran in a sandbox Pod
+just kind-down
 ```
 
-Redis is optional for local development — omitting `-redis` uses an
-in-memory store that is lost on restart. The `process` launcher runs
-`stirrup job` as a local subprocess instead of creating a Kubernetes
-Job, which is the fastest loop for trying hairpin out:
+`just deploy` also installs a development-only stand-in model provider
+(`scripts/dev/fake-provider.yaml`) so a run completes without an API
+key or any egress from the cluster.
+
+For a real cluster, apply [`examples/k8s/`](examples/k8s/) and supply
+your own provider Secret. An in-cluster hairpin needs almost no
+configuration: it reads its namespace from its projected
+ServiceAccount, advertises `hairpin.<namespace>.svc` on its listen
+port, and defaults both images to the published tags.
 
 ```sh
 ./hairpin serve \
-  -listen :8130 \
-  -advertise 127.0.0.1:8130 \
-  -launcher process \
-  -stirrup-bin /path/to/stirrup
+  --redis redis.hairpin.svc:6379 \
+  --profiles /etc/hairpin/profiles \
+  --harness-service-account stirrup-harness \
+  --sandbox-namespace hairpin-sandboxes
 ```
 
 Submit a job. Connect's JSON protocol speaks plain HTTP/1.1, so a curl
@@ -75,8 +91,8 @@ curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
 `harnessSession` is the bearer credential a harness must present
 (as `CONTROL_PLANE_SESSION_ID`, echoed back in the harness's `ready`
 event) to claim this job's stream — a bare job ID is no longer
-enough. The `process` and `k8s` launchers inject it automatically;
-it only matters to a caller when starting a harness out-of-band with
+enough. The Kubernetes launcher injects it automatically; it only
+matters to a caller when starting a harness out-of-band with
 `-launcher none`. It appears once, in this response — treat it as a
 secret and see [`docs/api.md`](docs/api.md#submitjob) for details.
 
@@ -117,6 +133,18 @@ given), and hairpin fills in two fields before launch:
 |---|---|
 | `run_id` | The hairpin job ID, forced unconditionally — a caller cannot override it. |
 | `prompt` | The request's `prompt`, but only when the profile carries none. |
+| `executor.image` | `-sandbox-image`, when the template names none. |
+| `executor.k8sNamespace` | `-sandbox-namespace`, when the template names none. |
+| `executor.k8sServiceAccount` | `-sandbox-service-account`, when the template names none. |
+| `executor.runtime` | `-sandbox-runtime`, when the template names none. |
+
+The four executor fields are filled only for the `k8s` and
+`k8s-sandbox` executors, and only where the template left them empty —
+a profile that pins its own sandbox image or namespace keeps it. The
+split is deliberate: a profile says what isolation a run needs, and the
+operator running hairpin says where in the cluster it happens and as
+what identity. A template that names none of them is portable across
+deployments.
 
 Everything else in the template is used verbatim. Unlike `stirrup
 harness`'s CLI, there is no defaulting on the wire: `mode`,
@@ -127,7 +155,12 @@ that omits any of them before it ever reaches a launcher.
 `executor.type` in particular has no safe implicit default: an
 omitted executor defaults to `"local"` harness-side, running the
 agent's shell commands directly in the harness process rather than a
-sandbox, so hairpin requires it to be a deliberate choice. A caller
+sandbox, so hairpin requires it to be a deliberate choice. For the
+Pod-backed executors hairpin also mirrors stirrup's cross-field rules
+at submit — a missing `network.mode`, a `workspace` the Pod has no way
+to mount, `allowlist` egress with no proxy URL — so a run that could
+never construct its executor is refused before a Job is created rather
+than after a Pod is scheduled. A caller
 may skip profiles entirely and pass a complete `run_config_json`,
 which is mutually exclusive with `profile`.
 
@@ -138,28 +171,33 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | Flag | Default | Meaning |
 |---|---|---|
 | `-listen` | `:8130` | h2c listen address serving the API, control plane, and web UI. |
-| `-advertise` | *(required)* | Address harnesses dial back into (`CONTROL_PLANE_ADDR`). |
+| `-advertise` | `hairpin.<namespace>.svc:<port>` | Address harnesses dial back into (`CONTROL_PLANE_ADDR`). Defaulted only when the namespace is known; required otherwise. |
 | `-redis` | *(empty)* | Redis `host:port`. Empty selects the in-memory store (dev only). |
 | `-redis-password` | *(empty)* | Redis password. |
 | `-redis-db` | `0` | Redis database number. |
-| `-launcher` | `none` | Harness launcher: `k8s`, `process`, or `none`. |
+| `-launcher` | `kubernetes` | Harness launcher: `kubernetes` or `none`. |
 | `-profiles` | *(empty)* | Directory of RunConfig profile templates (`<name>.json`). |
 | `-default-profile` | `default` | Profile used when a submit names none. |
-| `-stirrup-bin` | *(empty)* | Process launcher: path to the stirrup binary. |
-| `-stirrup-workdir` | *(empty)* | Process launcher: harness working directory (empty: per-job temp dir). |
-| `-stirrup-inherit-env` | `true` | Process launcher: pass hairpin's environment to the harness. |
-| `-k8s-namespace` | *(empty)* | k8s launcher: namespace for harness Jobs. |
-| `-k8s-image` | *(empty)* | k8s launcher: stirrup container image. |
-| `-k8s-kubeconfig` | *(empty)* | k8s launcher: kubeconfig path (empty: in-cluster, then `$KUBECONFIG`). |
-| `-k8s-service-account` | *(empty)* | k8s launcher: ServiceAccount for harness Pods. |
-| `-k8s-env-from-secrets` | *(empty)* | k8s launcher: comma-separated Secret names exposed to harness Pods via `envFrom`. |
-| `-k8s-job-ttl` | `3600` | k8s launcher: Job `ttlSecondsAfterFinished`. |
-| `-k8s-deadline-slack` | `10m` | k8s launcher: slack added to the RunConfig timeout for the Job's `activeDeadlineSeconds`. |
+| `-namespace` | *(the Pod's own)* | Namespace harness Jobs are created in, read from the projected ServiceAccount when running in-cluster. |
+| `-harness-image` | `ghcr.io/rxbynerd/stirrup:latest` | Harness image run as the Job. |
+| `-harness-service-account` | *(empty)* | ServiceAccount for harness Pods. Its token is mounted so the sandbox executor can reach the API; empty mounts none. |
+| `-harness-secrets` | *(empty)* | Comma-separated Secret names exposed to harness Pods via `envFrom`. |
+| `-kubeconfig` | *(empty)* | Kubeconfig path. Empty prefers in-cluster config, then `$KUBECONFIG`. |
+| `-job-ttl` | `3600` | `ttlSecondsAfterFinished` on created harness Jobs. |
+| `-deadline-slack` | `10m` | Slack added to the RunConfig timeout for the Job's `activeDeadlineSeconds`. |
+| `-sandbox-image` | `ghcr.io/rxbynerd/stirrup-sandbox:latest` | Image sandbox Pods run. Must ship a shell, `tar`, `ls`, and `mkdir`. |
+| `-sandbox-namespace` | *(`-namespace`)* | Namespace sandbox Pods and their NetworkPolicies are created in. |
+| `-sandbox-service-account` | *(empty)* | ServiceAccount for sandbox Pods. Its token is never mounted. |
+| `-sandbox-runtime` | *(cluster default)* | `RuntimeClassName` for sandbox Pods: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`. |
+
+The four `-sandbox-*` flags do not configure hairpin's own behaviour —
+they are the values it writes into each submitted RunConfig's executor.
+See [Profiles](#profiles).
 
 `-launcher=none` disables harness launching entirely: jobs sit in
-`awaiting_harness` until something starts a `stirrup job` out-of-band
-with `CONTROL_PLANE_SESSION_ID` set to the job ID. Useful for tests and
-for driving the harness lifecycle from outside hairpin.
+`awaiting_harness` until something starts a harness out-of-band with
+`CONTROL_PLANE_SESSION_ID` set to the job ID. Useful for tests and for
+driving the harness lifecycle from outside hairpin.
 
 ## Trust posture
 
@@ -193,7 +231,7 @@ creates:
   matters specifically for deployments that front the UI with
   cookie-based SSO: without it, a cross-site form post would ride that
   cookie straight into a job action.
-- **Hardened harness Pod `securityContext`** (k8s launcher): seccomp
+- **Hardened harness Pod `securityContext`**: seccomp
   `RuntimeDefault`, all capabilities dropped, no privilege escalation,
   and a writable `/tmp` provided via `emptyDir` rather than a broader
   writable root filesystem.

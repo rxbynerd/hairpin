@@ -1,47 +1,53 @@
 # Kubernetes reference manifests
 
 A minimal, applyable starting point for running hairpin on a cluster:
-hairpin itself, the RBAC it needs to launch harness Jobs
-(`internal/launcher/k8s.go`), a bare-bones Redis, and a placeholder
-Secret for provider API keys.
+hairpin itself, the three identities involved in a run, a bare-bones
+Redis, the profiles hairpin serves, and a placeholder Secret for
+provider API keys.
+
+Full narrative, including the trust boundary the two namespaces draw
+and what the harness's RBAC is for, is in
+[`docs/deployment.md`](../../docs/deployment.md).
 
 ## Files
 
 | File | Kind | Purpose |
 |---|---|---|
-| `namespace.yaml` | Namespace | The `hairpin` namespace everything below lives in. |
-| `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the batch/v1 Jobs verbs the launcher needs: create, get, list, watch, delete. |
+| `namespace.yaml` | Namespace ×2 | `hairpin` (server, Redis, harness Jobs) and `hairpin-sandboxes` (the Pods agent commands run in). |
+| `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `batch/v1` Jobs verbs its launcher needs: create, get. |
+| `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity that creates and execs into sandbox Pods, and the token-less `stirrup-sandbox` identity those Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise. |
-| `hairpin.yaml` | Deployment + Service | hairpin itself, flags wired to the k8s launcher and the Redis above. |
-| `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--k8s-env-from-secrets`. Replace the value before applying, or generate the Secret out-of-band and drop this file. |
+| `profiles.yaml` | ConfigMap | RunConfig profile templates, mounted at `--profiles`. |
+| `hairpin.yaml` | Deployment + Service | hairpin itself. |
+| `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and drop this file. |
 
 ## What to edit before applying
 
-- `hairpin.yaml`: `containers[0].image` (a built-and-pushed hairpin
-  image) and `--k8s-image` (the stirrup image the launcher runs as
-  harness Jobs).
+- `hairpin.yaml`: `containers[0].image` — a built-and-pushed hairpin
+  image. The stirrup harness and sandbox images already default to
+  their published tags.
+- `profiles.yaml`: the `default` profile's model and permission
+  policy, or add profiles of your own.
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
-  other `secret://`-referenced keys your RunConfig profiles need.
+  other `secret://`-referenced keys your profiles need.
 
-## Apply order
+The namespace and advertise address need no editing: hairpin reads its
+namespace from its projected ServiceAccount and advertises
+`hairpin.<namespace>.svc` on its listen port.
+
+## Apply
 
 ```sh
-kubectl apply -f examples/k8s/namespace.yaml
-kubectl apply -f examples/k8s/rbac.yaml
-kubectl apply -f examples/k8s/redis.yaml
-kubectl apply -f examples/k8s/secret.yaml
-kubectl apply -f examples/k8s/hairpin.yaml
+kubectl apply -f examples/k8s/
 ```
 
-or, once the images and Secret are edited, `kubectl apply -f
-examples/k8s/` applies all five in one pass — `kubectl apply` is
-order-independent within a single invocation.
+`kubectl apply` is order-independent within a single invocation.
 
 ## Submitting a job
 
-Once the `hairpin` Service is up, port-forward or exec in from
-another Pod in the cluster and call `JobService/SubmitJob` (connect-go
-serves JSON and gRPC on the same h2c port):
+Once the `hairpin` Service is up, port-forward or exec in from another
+Pod in the cluster and call `JobService/SubmitJob` (connect-go serves
+JSON and gRPC on the same h2c port):
 
 ```sh
 kubectl -n hairpin port-forward svc/hairpin 8130:8130
@@ -53,6 +59,10 @@ curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
 
 The response carries the job ID; poll `GetJob` or open the web UI at
 `http://localhost:8130/` to watch it run.
+
+For a throwaway cluster that needs no API key at all, see
+[`scripts/dev/`](../../scripts/dev/) — `just kind-up && just deploy &&
+just smoke-test`.
 
 ## Trust posture
 

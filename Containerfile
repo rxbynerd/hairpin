@@ -14,6 +14,8 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/hairpin /usr/local/bin/hairpin
 
 EXPOSE 8130
-USER nonroot:nonroot
+# Numeric, not the "nonroot" name: a Pod with runAsNonRoot cannot verify
+# a non-numeric image user and refuses to start the container.
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/hairpin"]
 CMD ["serve", "--listen=:8130"]

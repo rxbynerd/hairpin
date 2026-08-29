@@ -62,9 +62,9 @@ caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ 
 | `internal/controlplane` | connect-go handler for `stirrup.harness.v1.HarnessService` — correlation, assignment, event pump, permission bridging, terminal handling. |
 | `internal/service` | Core operations (Submit/Get/List/Watch/Cancel/Answer) shared by the connect API and the web UI. |
 | `internal/api` | connect-go handler for `hairpin.v1.JobService`, a thin shim over `internal/service`. |
-| `internal/launcher` | `Launcher` interface; `k8s` (client-go batch/v1 Job) and `process` (local `stirrup job` subprocess, for dev and e2e tests) impls. |
+| `internal/launcher` | `Launcher` interface; a client-go `batch/v1` Job impl and `None` for harnesses started out-of-band. |
 | `internal/web` | Embedded html/template UI: job list, submit form, job detail with SSE live event feed, approve/deny buttons. |
-| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, launcher selection, profiles dir. |
+| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, profiles dir, harness Job settings, and the sandbox coordinates submitted RunConfigs inherit. |
 | `cmd/hairpin` | `hairpin serve`; wires everything onto one h2c listener. |
 
 Both proto services are served by connect-go on a single h2c port, so
