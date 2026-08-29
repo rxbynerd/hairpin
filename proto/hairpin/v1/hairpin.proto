@@ -1,0 +1,208 @@
+syntax = "proto3";
+
+package hairpin.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// JobService is hairpin's caller-facing API. Served via connect-go, so
+// clients may speak gRPC, gRPC-Web, or Connect's JSON/HTTP protocol
+// against the same endpoints.
+//
+// Lifecycle: SubmitJob returns a job ID immediately; hairpin launches a
+// `stirrup job` harness on its cluster and acts as the control plane the
+// harness dials back into. Progress is observable via GetJob (polling),
+// WatchJob (streaming), and the bundled web UI.
+service JobService {
+  // SubmitJob accepts a task and returns the job ID that all other RPCs
+  // key on. The job is persisted before this returns; launch failures
+  // after that surface as job status transitions, not RPC errors.
+  rpc SubmitJob(SubmitJobRequest) returns (SubmitJobResponse);
+
+  // GetJob returns the current record for one job.
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+
+  // ListJobs returns jobs newest-first.
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+
+  // WatchJob streams the job's recorded harness events from the given
+  // position, then follows the live stream until the job reaches a
+  // terminal status or the caller disconnects.
+  rpc WatchJob(WatchJobRequest) returns (stream WatchJobResponse);
+
+  // CancelJob requests cancellation. A running harness is sent a cancel
+  // ControlEvent and winds down within one turn boundary; a job that has
+  // not been assigned yet is cancelled before assignment.
+  rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+
+  // ListPermissionRequests returns the permission requests recorded for
+  // a job, pending ones first.
+  rpc ListPermissionRequests(ListPermissionRequestsRequest) returns (ListPermissionRequestsResponse);
+
+  // AnswerPermission resolves a pending permission_request from the
+  // harness. Unanswered requests are auto-denied harness-side when the
+  // policy timeout (default 60s) expires.
+  rpc AnswerPermission(AnswerPermissionRequest) returns (AnswerPermissionResponse);
+}
+
+// JobStatus is the hairpin-side lifecycle of a job. Terminal statuses
+// are SUCCEEDED, FAILED, and CANCELLED.
+enum JobStatus {
+  JOB_STATUS_UNSPECIFIED = 0;
+  // Accepted and persisted; launcher not yet invoked.
+  JOB_STATUS_QUEUED = 1;
+  // Launcher invoked; the Kubernetes Job (or subprocess) is being created.
+  JOB_STATUS_LAUNCHING = 2;
+  // Harness started but has not yet dialled back in with "ready".
+  JOB_STATUS_AWAITING_HARNESS = 3;
+  // task_assignment sent; the harness is executing.
+  JOB_STATUS_RUNNING = 4;
+  // Terminal: done.stop_reason was "success".
+  JOB_STATUS_SUCCEEDED = 5;
+  // Terminal: any non-success, non-cancelled outcome — including launch
+  // errors and a stream that closed without a done event. See
+  // Job.stop_reason and Job.error for the cause.
+  JOB_STATUS_FAILED = 6;
+  // Terminal: cancelled via CancelJob (stop_reason "cancelled", or
+  // cancelled before assignment).
+  JOB_STATUS_CANCELLED = 7;
+}
+
+// Job is the caller-visible record of one submitted task.
+message Job {
+  // Hairpin job ID ("hp-" + lowercase ULID). Also used verbatim as the
+  // stirrup RunConfig run_id and the harness correlation session ID.
+  string id = 1;
+  JobStatus status = 2;
+  // The task prompt as submitted (or as carried in an explicit
+  // run_config_json).
+  string prompt = 3;
+  // The profile the RunConfig was resolved from; empty when the caller
+  // supplied run_config_json.
+  string profile = 4;
+  // The stirrup done.stop_reason verbatim ("success", "error",
+  // "timeout", ...). Empty until terminal. Unknown values are preserved:
+  // stirrup adds stop reasons over time.
+  string stop_reason = 5;
+  // Human-readable failure detail (launch errors, harness error events,
+  // crash notes). Empty on success.
+  string error = 6;
+  // Final assistant text accumulated from text_delta events, capped
+  // server-side (128 KiB).
+  string final_text = 7;
+  google.protobuf.Timestamp created_at = 8;
+  // When task_assignment was sent (start of execution).
+  google.protobuf.Timestamp started_at = 9;
+  google.protobuf.Timestamp finished_at = 10;
+  // Last time any event (including heartbeats) arrived from the
+  // harness. Staleness beyond ~30s during RUNNING suggests a hang.
+  google.protobuf.Timestamp last_event_at = 11;
+}
+
+message SubmitJobRequest {
+  // The task prompt. Required unless run_config_json carries its own.
+  string prompt = 1;
+  // Named RunConfig profile to resolve the task against. Empty selects
+  // the server's default profile. Mutually exclusive with
+  // run_config_json.
+  string profile = 2;
+  // Advanced: a complete stirrup RunConfig in protobuf-JSON form, used
+  // verbatim except run_id (forced to the job ID) and prompt (filled
+  // from this request's prompt when the config carries none). The wire
+  // RunConfig receives no CLI defaulting: mode, provider.type,
+  // max_turns, and timeout must all be explicit.
+  string run_config_json = 3;
+}
+
+message SubmitJobResponse {
+  Job job = 1;
+}
+
+message GetJobRequest {
+  string id = 1;
+}
+
+message GetJobResponse {
+  Job job = 1;
+}
+
+message ListJobsRequest {
+  // Maximum jobs to return; the server defaults and caps this (100).
+  int32 limit = 1;
+  // Opaque cursor from a previous response.
+  string page_token = 2;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  // Empty when there are no further pages.
+  string next_page_token = 2;
+}
+
+// JobEvent is one recorded harness event.
+message JobEvent {
+  // Redis stream ID; also the resume position for WatchJob.after_id.
+  string id = 1;
+  // The HarnessEvent type discriminator ("text_delta", "tool_call",
+  // "done", ...) plus hairpin-synthesised types ("status_change").
+  string type = 2;
+  // The originating stirrup.harness.v1.HarnessEvent in protobuf-JSON
+  // form (heartbeats are recorded without payload). Consumers should
+  // tolerate unknown fields.
+  string payload_json = 3;
+  google.protobuf.Timestamp at = 4;
+}
+
+message WatchJobRequest {
+  string id = 1;
+  // Resume after this event ID; empty streams from the beginning.
+  string after_id = 2;
+}
+
+message WatchJobResponse {
+  JobEvent event = 1;
+}
+
+message CancelJobRequest {
+  string id = 1;
+}
+
+message CancelJobResponse {
+  Job job = 1;
+}
+
+// PermissionRequest is a harness permission_request awaiting (or having
+// received) a decision.
+message PermissionRequest {
+  // The harness-assigned request_id, echoed back on the decision.
+  string request_id = 1;
+  string tool_name = 2;
+  // JSON-encoded tool input, as sent by the harness.
+  string input_json = 3;
+  // "pending", "allowed", or "denied". A pending request older than the
+  // harness policy timeout has already been auto-denied harness-side.
+  string state = 4;
+  // Denial reason, when one was given.
+  string reason = 5;
+  google.protobuf.Timestamp requested_at = 6;
+  google.protobuf.Timestamp answered_at = 7;
+}
+
+message ListPermissionRequestsRequest {
+  string job_id = 1;
+}
+
+message ListPermissionRequestsResponse {
+  repeated PermissionRequest permission_requests = 1;
+}
+
+message AnswerPermissionRequest {
+  string job_id = 1;
+  string request_id = 2;
+  bool allow = 3;
+  // Optional context passed to the model on denial.
+  string reason = 4;
+}
+
+message AnswerPermissionResponse {
+  PermissionRequest permission_request = 1;
+}
