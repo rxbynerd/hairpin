@@ -26,7 +26,7 @@ caller ──SubmitJob──▶ hairpin ──creates──▶ K8s Job (stirrup 
                          └──── RunTask bidi ──────┘
                               (harness dials CONTROL_PLANE_ADDR,
                                ready.id = CONTROL_PLANE_SESSION_ID
-                                        = hairpin job ID)
+                                        = "<job id>.<session token>")
 caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ hairpin ──▶ Redis
 ```
 
@@ -37,8 +37,8 @@ caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ 
    (`launching`).
 2. The launcher creates a Kubernetes `batch/v1` Job running `stirrup job`
    with `CONTROL_PLANE_ADDR` pointing back at hairpin and
-   `CONTROL_PLANE_SESSION_ID` set to the hairpin job ID
-   (`awaiting_harness`).
+   `CONTROL_PLANE_SESSION_ID` set to the job's session string —
+   `<job id>.<bearer token>` (`awaiting_harness`).
 3. The harness opens the `RunTask` stream and sends `ready`. Hairpin
    correlates via `ready.id`, sends `task_assignment` with the stored
    RunConfig (`running`), and pumps every harness event into a Redis

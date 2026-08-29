@@ -23,12 +23,13 @@ current: check items off as they land, add discoveries.
 - [x] Wire cmd/hairpin (native net/http unencrypted-HTTP/2, no x/net h2c)
 - [x] Wire-level e2e tests (fake harness over real gRPC): full loop, cancel-before-harness, crash settlement. Found+fixed: empty profile set rejected default-profile flag.
 
-## Wave 3 — review & docs (dispatched, in flight)
-- [ ] change-verifier: real binaries (hairpin + stirrup + redis-server + stub provider) live run
-- [ ] code-reviewer findings → fix
-- [ ] security-reviewer findings → fix (reports land in .claude/reviews/)
-- [ ] docs agent: README, docs/api.md, docs/deployment.md
-- [ ] After fixes: re-run full suite, final commits
+## Wave 3 — review & docs
+- [x] change-verifier: real-binaries run found THE critical bug — finish() wrote terminal state on the stream's context, which the exiting harness cancels first; every completed job stuck RUNNING forever. Fixed (d76b07e): pump context detached via context.WithoutCancel + regression test over a ctx-respecting store wrapper (proven failing pre-fix). Also fixed: "warning" event handled, launcher logs workdir.
+- [x] Main session re-verified live post-fix with real stirrup + redis + fake OpenAI SSE provider: success path (SUCCEEDED, stop_reason "success", finalText captured), failure path (FAILED with harness error), token session flow through real binary, SSE timeline, UI badges, redis layout — all correct; processes cleaned up.
+- [x] code-reviewer findings triaged: its CRITICAL ("success" is not a stop_reason) was a FALSE POSITIVE — verified against stirrup source (loop.go emits done.StopReason=outcome, happy path literally "success"); all real findings fixed in 63c9f51
+- [x] security-reviewer findings fixed (63c9f51): per-job harness session tokens (SubmitJobResponse.harness_session = "<id>.<token>" via CONTROL_PLANE_SESSION_ID), executor.type now required at submit, pod hardening, 4MiB read caps, permission cap, SSE type demotion, same-origin+headers on UI, shutdown cancels live runs, AnswerPermission persist-first, id format validation
+- [x] docs agent: README, docs/api.md, docs/deployment.md written; second pass updating for the fix wave in flight
+- [ ] Commit docs pass; final full-suite run; consider verifier re-run against fixed build
 
 ## Known deferrals (see docs/design.md "Deliberately deferred")
 Follow-ups, sandbox tokens (explicit refusal), batch, multi-replica, auth.
