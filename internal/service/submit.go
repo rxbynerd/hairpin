@@ -92,9 +92,9 @@ func (s *Service) resolveConfig(p SubmitParams) (*harnessv1.RunConfig, string, e
 	return cfg, name, nil
 }
 
-// validateRunConfig applies the checks stirrup makes on the wire, where
-// no CLI defaulting happens. Failing here turns a doomed pod launch
-// into an immediate error for the caller.
+// validateRunConfig performs Hairpin's preflight checks for required
+// wire fields and Kubernetes executor coordinates. Stirrup remains the
+// authority for the full RunConfig schema and cross-field validation.
 func validateRunConfig(cfg *harnessv1.RunConfig) error {
 	if cfg.GetPrompt() == "" {
 		return fmt.Errorf("prompt is required: %w", ErrInvalidArgument)

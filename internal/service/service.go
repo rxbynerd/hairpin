@@ -191,9 +191,9 @@ func (s *Service) cancelUnassigned(ctx context.Context, id string) (*job.Job, er
 	return j, nil
 }
 
-// AnswerPermission resolves a pending permission request by routing the
-// decision onto the job's live harness stream. The decision is recorded
-// only once the harness has accepted it.
+// AnswerPermission resolves a pending permission request. It records the
+// decision before sending it to the live harness stream, and reverts the
+// record if delivery fails.
 func (s *Service) AnswerPermission(ctx context.Context, jobID, requestID string, allow bool, reason string) (store.PermissionRequest, error) {
 	if err := checkID(jobID); err != nil {
 		return store.PermissionRequest{}, err

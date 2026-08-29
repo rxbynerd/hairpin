@@ -22,9 +22,9 @@ var ErrConflict = errors.New("conflict")
 // Event is one recorded harness (or hairpin-synthesised) event on a
 // job's timeline.
 type Event struct {
-	// ID is the store-assigned, lexically-increasing position (Redis
-	// stream ID form "millis-seq"). Opaque to callers except as a resume
-	// cursor.
+	// ID is the store-assigned, monotonically increasing position (in
+	// Redis stream ID form, "millis-seq"). Callers treat it as an opaque
+	// resume cursor.
 	ID string
 	// Type is the HarnessEvent type discriminator, or a hairpin
 	// synthetic type such as "status_change".

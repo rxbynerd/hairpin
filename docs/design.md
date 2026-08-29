@@ -1,12 +1,10 @@
 # Hairpin design
 
-Hairpin reverses the client-server direction of
+Hairpin provides a service control plane for
 [stirrup](https://github.com/rxbynerd/stirrup). Stirrup's `stirrup job`
-is intentionally a *client*: it dials the gRPC address in
-`CONTROL_PLANE_ADDR` and asks for work. That is the right shape for
-organisations running a full control plane, but it asks a lot from
-event-driven callers — a Lambda handling a webhook should not have to
-host a bidirectional gRPC server for the lifetime of a run.
+is a client: it dials the gRPC address in `CONTROL_PLANE_ADDR` and asks
+for work. Hairpin owns that long-lived stream so request/response
+callers do not need to host a bidirectional gRPC server for each run.
 
 Hairpin is that control plane, packaged as a service. A caller submits
 a task over a simple request/response API and gets back a job ID. Hairpin
@@ -88,31 +86,36 @@ Job IDs are lowercase ULIDs prefixed `hp-` — sortable, and satisfying
 stirrup's run_id constraints (no path separators, `..`, control bytes).
 `runId` is always the hairpin job ID.
 
-## Trust posture (v0.1)
+## Trust posture
 
-Hairpin inherits stirrup v0.1's plaintext, unauthenticated gRPC posture:
-run it on a trusted network (cluster-internal Service, mesh mTLS). The
-JobService API and web UI carry no authentication yet either — front
-them with your ingress's auth. Do not expose either port publicly.
+Hairpin serves plaintext h2c on one listener. The JobService API and web
+UI do not authenticate or authorize callers; keep the Service on a
+trusted network and terminate authenticated TLS at an ingress or use
+mesh mTLS before exposing it outside the cluster. A harness's per-job
+bearer token authenticates its claim to that job, but does not provide
+transport encryption or caller identity for the API/UI.
 
-Within that posture, harness streams are still not trusted on job ID
-alone: submission mints a per-job bearer token, launchers pass
+Harness streams are not trusted on job ID alone: submission mints a
+per-job bearer token, launchers pass
 `<job id>.<token>` as `CONTROL_PLANE_SESSION_ID`, and the control plane
 rejects a `ready` whose token does not match (constant-time). Job IDs
 are time-ordered ULIDs visible in pod names and URLs; without the token
 a neighbouring pod could claim another job's stream and read its
 RunConfig. Both connect services cap received messages at 4 MiB,
 permission requests are capped per job, the web UI enforces same-origin
-on state-changing requests, and shutdown cancels live runs so restarts
-do not strand jobs in `running`.
+on state-changing requests, and graceful shutdown cancels live runs
+before draining the listener.
 
-## Deliberately deferred (v1 scope cuts)
+## Current limitations
 
-- Follow-up turns (`followUpGrace` / `user_response`) — single run per job.
-- `sandbox_token_request` — answered with an explicit `is_error` refusal
-  so opted-in configs fail fast rather than hang.
-- `batch_submission` / `tool_result_request` — not answered; don't
-  enable those RunConfig features via hairpin yet.
-- Multi-replica hairpin — the session registry is in-process. Scaling
-  out needs the control-event bridge moved to Redis pub/sub.
-- AuthN/AuthZ on the API and UI.
+- Follow-up turns (`followUpGrace` / `user_response`) are not supported;
+  one hairpin job represents one run.
+- `sandbox_token_request` receives an explicit `is_error` refusal.
+- Batch and asynchronous tool-result requests are recorded but not
+  answered. RunConfigs that depend on these protocol capabilities do
+  not currently fail validation at submit time; see
+  [issue #1](https://github.com/rxbynerd/hairpin/issues/1).
+- Only one hairpin replica is safe because the live session registry is
+  in-process; see [issue #4](https://github.com/rxbynerd/hairpin/issues/4).
+- API/UI authentication, authorization, and transport TLS are not built
+  in; see [issue #5](https://github.com/rxbynerd/hairpin/issues/5).

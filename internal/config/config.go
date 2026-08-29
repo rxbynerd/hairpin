@@ -127,6 +127,20 @@ func (c *Config) Validate() error {
 	if c.AdvertiseAddr == "" {
 		return fmt.Errorf("advertise address is required (harnesses must know where to dial back)")
 	}
+	if c.RedisDB < 0 {
+		return fmt.Errorf("redis database number must be non-negative")
+	}
+	if c.Harness.TTLSecondsAfterFinished < 0 {
+		return fmt.Errorf("job TTL must be non-negative")
+	}
+	if c.Harness.ActiveDeadlineSlack < 0 {
+		return fmt.Errorf("deadline slack must be non-negative")
+	}
+	switch c.Sandbox.Runtime {
+	case "", "runc", "gvisor", "kata-qemu", "kata-fc", "kata-clh":
+	default:
+		return fmt.Errorf("unknown sandbox runtime %q", c.Sandbox.Runtime)
+	}
 	switch c.Launcher {
 	case "kubernetes":
 		if c.Harness.Namespace == "" {

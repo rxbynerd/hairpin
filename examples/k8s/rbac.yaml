@@ -20,11 +20,10 @@ rules:
   - apiGroups: ["batch"]
     resources:
       - jobs
-    # hairpin only creates Jobs today; get supports idempotent retry
-    # diagnostics. Add list/watch/delete when a reaper lands.
+    # The launcher only creates Jobs. Kubernetes reports an existing
+    # object from the create call, so idempotent retries need no read verb.
     verbs:
       - create
-      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

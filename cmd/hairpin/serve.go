@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -74,6 +75,9 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	}
 	if *secrets != "" {
 		cfg.Harness.EnvFromSecrets = splitComma(*secrets)
+	}
+	if *ttl < 0 || int64(*ttl) > math.MaxInt32 {
+		return nil, fmt.Errorf("job TTL must be between 0 and %d seconds", int64(math.MaxInt32))
 	}
 	cfg.Harness.TTLSecondsAfterFinished = int32(*ttl)
 	cfg.Harness.ActiveDeadlineSlack = *slack
@@ -218,7 +222,7 @@ func buildLauncher(cfg *config.Config, logger *slog.Logger) (launcher.Launcher, 
 	case "kubernetes":
 		return launcher.NewK8s(cfg.Harness, cfg.AdvertiseAddr, logger)
 	default:
-		logger.Warn("launcher disabled; harnesses must be started out-of-band with CONTROL_PLANE_SESSION_ID set to the job ID")
+		logger.Warn("launcher disabled; harnesses must be started out-of-band with CONTROL_PLANE_SESSION_ID set to SubmitJob's harness_session")
 		return launcher.None{}, nil
 	}
 }

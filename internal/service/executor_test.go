@@ -120,9 +120,14 @@ func TestSubmitRejectsUnrunnableSandboxConfigs(t *testing.T) {
 		want string
 	}{
 		{
-			name: "no network mode",
+			name: "no network config",
 			mut:  func(ex *harnessv1.ExecutorConfig) { ex.Network = nil },
 			want: "executor.network is required",
+		},
+		{
+			name: "empty network mode",
+			mut:  func(ex *harnessv1.ExecutorConfig) { ex.Network.Mode = "" },
+			want: "executor.network.mode must be",
 		},
 		{
 			name: "workspace on a pod-backed executor",
@@ -140,6 +145,11 @@ func TestSubmitRejectsUnrunnableSandboxConfigs(t *testing.T) {
 			name: "egress proxy without allowlist mode",
 			mut:  func(ex *harnessv1.ExecutorConfig) { ex.K8SEgressProxyUrl = "http://egress:3128" },
 			want: "executor.k8sEgressProxyUrl is only valid",
+		},
+		{
+			name: "unknown Kubernetes runtime",
+			mut:  func(ex *harnessv1.ExecutorConfig) { ex.Runtime = "runsc" },
+			want: "unsupported executor.runtime",
 		},
 		{
 			name: "non-gvisor runtime on the CRD-provisioned sandbox",

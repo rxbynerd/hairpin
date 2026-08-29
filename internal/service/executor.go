@@ -12,6 +12,15 @@ import (
 // it through the Agent Sandbox CRD. Both consume the same K8s* fields.
 func isK8sExecutor(t string) bool { return t == "k8s" || t == "k8s-sandbox" }
 
+func validK8sRuntime(runtime string) bool {
+	switch runtime {
+	case "runc", "gvisor", "kata-qemu", "kata-fc", "kata-clh":
+		return true
+	default:
+		return false
+	}
+}
+
 // applyExecutorDefaults fills in the cluster coordinates of a sandbox
 // executor from the server's configuration, so a caller names only the
 // isolation it wants. A RunConfig that sets a field of its own keeps
@@ -53,18 +62,28 @@ func validateExecutor(ex *harnessv1.ExecutorConfig) error {
 	if ex.GetWorkspace() != "" {
 		return fmt.Errorf("executor.workspace is not valid for executor.type=%q (the Pod workspace is fixed at /workspace): %w", kind, ErrInvalidArgument)
 	}
-	if kind == "k8s-sandbox" && ex.GetRuntime() != "" && ex.GetRuntime() != "gvisor" {
-		return fmt.Errorf("executor.runtime must be %q or empty for executor.type=%q, got %q: %w", "gvisor", kind, ex.GetRuntime(), ErrInvalidArgument)
+	runtime := ex.GetRuntime()
+	if kind == "k8s-sandbox" {
+		if runtime != "" && runtime != "gvisor" {
+			return fmt.Errorf("executor.runtime must be %q or empty for executor.type=%q, got %q: %w", "gvisor", kind, runtime, ErrInvalidArgument)
+		}
+	} else if runtime != "" && !validK8sRuntime(runtime) {
+		return fmt.Errorf("unsupported executor.runtime %q for executor.type=%q: %w", runtime, kind, ErrInvalidArgument)
 	}
 	if ex.GetNetwork() == nil {
 		return fmt.Errorf("executor.network is required for executor.type=%q (set mode to \"none\" or \"allowlist\"): %w", kind, ErrInvalidArgument)
 	}
-	if ex.GetNetwork().GetMode() == "allowlist" {
+	switch ex.GetNetwork().GetMode() {
+	case "allowlist":
 		if ex.GetK8SEgressProxyUrl() == "" {
 			return fmt.Errorf("executor.k8sEgressProxyUrl is required when executor.network.mode is \"allowlist\": %w", ErrInvalidArgument)
 		}
-	} else if ex.GetK8SEgressProxyUrl() != "" {
-		return fmt.Errorf("executor.k8sEgressProxyUrl is only valid when executor.network.mode is \"allowlist\": %w", ErrInvalidArgument)
+	case "none":
+		if ex.GetK8SEgressProxyUrl() != "" {
+			return fmt.Errorf("executor.k8sEgressProxyUrl is only valid when executor.network.mode is \"allowlist\": %w", ErrInvalidArgument)
+		}
+	default:
+		return fmt.Errorf("executor.network.mode must be \"none\" or \"allowlist\", got %q: %w", ex.GetNetwork().GetMode(), ErrInvalidArgument)
 	}
 	return nil
 }

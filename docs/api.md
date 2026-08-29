@@ -29,9 +29,9 @@ Request fields (`SubmitJobRequest`):
 
 | Field | Meaning |
 |---|---|
-| `prompt` | The task prompt. Required unless `run_config_json` carries its own. |
+| `prompt` | The task prompt. A non-empty value replaces the prompt in the selected profile or `run_config_json`; when empty, the config must already carry a prompt. |
 | `profile` | Named RunConfig profile to resolve against. Empty selects the server's default profile. Mutually exclusive with `run_config_json`. |
-| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form, used verbatim except `run_id` (forced to the job ID), `prompt` (filled from this request's `prompt` when the config carries none), and an unset sandbox coordinate on a `k8s`/`k8s-sandbox` executor (filled from the server's `-sandbox-*` flags). See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
+| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form. Hairpin forces `run_id` to the job ID, applies a non-empty request `prompt`, and fills unset sandbox coordinates on `k8s`/`k8s-sandbox` executors from the server's `-sandbox-*` flags. See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
 
 ```sh
 curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
@@ -113,8 +113,8 @@ Each response frame carries one `JobEvent`:
 {"event": {"id": "1735500000000-0", "type": "text_delta", "payloadJson": "{\"type\":\"text_delta\",\"text\":\"...\"}", "at": "2026-08-29T09:00:01Z"}}
 ```
 
-`event.id` is the store-assigned position (a Redis stream ID,
-lexically increasing) — pass it back as `after_id` on a reconnect to
+`event.id` is an opaque, store-assigned, increasing position (currently
+Redis-stream-shaped) — pass it back as `after_id` on a reconnect to
 resume without re-reading history already seen. This is also exactly
 what the web UI's SSE endpoint does with the `Last-Event-ID` header
 (see [WatchJob resume semantics](#watchjob-resume-semantics) below).
@@ -182,10 +182,16 @@ curl -s http://localhost:8130/hairpin.v1.JobService/AnswerPermission \
 {"permissionRequest": {"requestId": "req-1", "toolName": "run_command", "inputJson": "...", "state": "denied", "reason": "not in this environment", "requestedAt": "...", "answeredAt": "..."}}
 ```
 
-Answering a request that is not pending (already answered, or the job
-has moved on) returns `invalid_argument`. Answering when the job has
-no live harness session returns `failed_precondition` — the harness
-that owned the request has already disconnected.
+Answering a request that Hairpin has already marked allowed or denied
+returns `invalid_argument`. Answering when the job has no live harness
+session returns `failed_precondition`.
+
+The harness auto-denies a request when its policy timeout expires, but
+it does not send Hairpin an expiration event. The stored request can
+therefore remain `pending`; a late answer may be accepted by this API
+even though the harness ignores it. Callers should answer within the
+configured timeout. Tracking expiration accurately is
+[issue #2](https://github.com/rxbynerd/hairpin/issues/2).
 
 ## Errors
 
@@ -194,7 +200,7 @@ Every RPC maps internal errors onto connect codes (`internal/api/api.go`):
 | Condition | Code |
 |---|---|
 | Job, event, or permission request not found | `not_found` |
-| Malformed RunConfig, unknown profile, missing prompt, non-pending permission answer | `invalid_argument` |
+| Malformed job ID or RunConfig, unknown profile, missing prompt, non-pending permission answer | `invalid_argument` |
 | Operation needed a live harness stream and there was none | `failed_precondition` |
 | Anything else | `internal` |
 
@@ -230,15 +236,16 @@ hairpin synthesises itself:
 | `type` | Origin | Notes |
 |---|---|---|
 | `text_delta` | harness | Incremental model output text. Hairpin coalesces consecutive deltas before persisting them, so the recorded timeline has fewer, larger fragments than the raw harness stream. |
-| `tool_call` | harness | `id`, `name`, `input` (JSON tool arguments). |
+| `tool_call` | harness | `id`, `name`, `input`. In `payloadJson`, protobuf encodes the `bytes` input as base64; decoding it yields the JSON tool arguments. |
 | `tool_result` | harness | `tool_use_id`, `content`. |
-| `permission_request` | harness | `request_id`, `tool_name`, `input`. Also recorded in the permissions store — see [`ListPermissionRequests`](#listpermissionrequests). |
+| `permission_request` | harness | `request_id`, `tool_name`, base64-encoded `input`. Also recorded in the permissions store with decoded JSON as `inputJson` — see [`ListPermissionRequests`](#listpermissionrequests). |
 | `heartbeat` | harness | No payload; liveness only. Sent every 30s during execution. |
 | `warning` | harness | `message`; non-fatal. |
-| `error` | harness | `message`. Followed by a `done` event carrying `stop_reason: "error"`. |
+| `error` | harness | `message`. The normal failure path follows it with `done` carrying `stop_reason: "error"`; transport loss can still end the stream first. |
 | `done` | harness | `stop_reason`, and `trace` when the harness populated it. Always the last harness-originated event of a run. |
-| `sandbox_token_request` | harness | Recorded, then hairpin immediately answers with an explicit refusal — see [Not supported in v1](#not-supported-in-v1). |
-| `batch_submission`, `tool_result_request` | harness | Recorded but not answered — see [Not supported in v1](#not-supported-in-v1). |
+| `sandbox_token_request` | harness | Recorded, then hairpin immediately answers with an explicit refusal — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
+| `batch_submission`, `tool_result_request` | harness | Recorded but not answered — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
+| `batch_waiting`, `batch_cancel_request` | harness | Recorded without batch-provider action; batch execution is unsupported. |
 | `status_change` | hairpin | Synthesised whenever hairpin moves a job between statuses. Payload: `{"status": "<job status>", "error": "<optional>"}`. This is what a watcher uses to detect job completion — see [WatchJob resume semantics](#watchjob-resume-semantics). |
 
 Unknown harness event types are recorded verbatim rather than dropped,
@@ -246,9 +253,9 @@ so a timeline never silently loses events stirrup adds in the future.
 
 ## Permission flow
 
-A RunConfig with `permission_policy.type: "ask-upstream"` routes every
-tool-permission decision to the control plane instead of deciding
-locally. The round trip:
+A RunConfig with `permission_policy.type: "ask-upstream"` routes
+approval-required tool calls to the control plane. Tools that do not
+require approval are allowed harness-side without this round trip:
 
 1. The harness wants to run a tool and sends a `permission_request`
    `HarnessEvent` (`request_id`, `tool_name`, `input`) on the open
@@ -260,17 +267,17 @@ locally. The round trip:
    web UI's job detail page — sees the pending request via
    `ListPermissionRequests` or the live `WatchJob`/SSE feed, and calls
    `AnswerPermission`.
-4. `AnswerPermission` sends a `permission_response` `ControlEvent`
-   (`request_id`, `allowed`, `reason`) onto the harness's live stream
-   via the in-process session registry, then records the decision.
-   Denial surfaces `reason` back to the model as context for its next
-   turn; the model sees the tool call as refused, not as an error.
+4. `AnswerPermission` records the decision, then sends a
+   `permission_response` `ControlEvent` (`request_id`, `allowed`,
+   `reason`) onto the harness's live stream through the in-process
+   session registry. If delivery fails, Hairpin restores the pending
+   record so the caller can retry. A denial's `reason` is passed to the
+   model as context.
 
-If nobody answers, the harness auto-denies the request itself once its
-own policy timeout (default 60s) expires — hairpin does not enforce a
-timeout on its side; it simply stops being able to answer once the
-harness moves on. Answering an already-timed-out request returns
-`invalid_argument` (state is no longer `pending`).
+If nobody answers, the harness denies the call when its policy timeout
+(default 60s) expires. Hairpin does not enforce or observe that timeout,
+so its stored state may remain `pending`; see the warning under
+[`AnswerPermission`](#answerpermission).
 
 ## WatchJob resume semantics
 
@@ -278,10 +285,10 @@ Both `WatchJob` and the web UI's `/jobs/{id}/events` SSE endpoint
 serve the same underlying event source
 (`internal/service.Service.Watch`) and share resume semantics:
 
-- **Position** is an opaque, lexically-increasing event ID (a Redis
-  stream ID, `internal/store.Event.ID`). There is no separate cursor
-  format — the ID a caller already received is the ID it resumes
-  from.
+- **Position** is an opaque, increasing event ID
+  (`internal/store.Event.ID`, currently Redis-stream-shaped). There is
+  no separate cursor format — callers resume from the ID they already
+  received.
 - **`after_id` / `Last-Event-ID`**: `WatchJob.after_id` and the SSE
   `Last-Event-ID` request header (which browsers set automatically on
   reconnect) mean the same thing — resume strictly after this
@@ -301,17 +308,21 @@ serve the same underlying event source
   done" check — event exhaustion on this endpoint means "no further
   activity is coming for the position you asked for."
 
-## Not supported in v1
+## Unsupported protocol capabilities
 
-hairpin deliberately narrows the harness protocol's surface for this
-release. Copied from
-[`docs/design.md`](design.md#deliberately-deferred-v1-scope-cuts):
+Hairpin currently supports one harness run per job and does not
+implement these optional parts of the stirrup protocol:
 
-- Follow-up turns (`followUpGrace` / `user_response`) — single run per job.
-- `sandbox_token_request` — answered with an explicit `is_error` refusal
-  so opted-in configs fail fast rather than hang.
-- `batch_submission` / `tool_result_request` — not answered; don't
-  enable those RunConfig features via hairpin yet.
-- Multi-replica hairpin — the session registry is in-process. Scaling
-  out needs the control-event bridge moved to Redis pub/sub.
-- AuthN/AuthZ on the API and UI.
+- Follow-up turns (`followUpGrace` / `user_response`).
+- Sandbox identity token issuance. A `sandbox_token_request` receives an
+  explicit `is_error` refusal so the harness fails before creating a
+  sandbox.
+- Batch execution and asynchronous tool results. Related events are
+  recorded, but Hairpin does not send the required provider result.
+
+`SubmitJob` does not yet reject every RunConfig that enables these
+features. Do not enable them through Hairpin; fail-fast capability
+validation is tracked in
+[issue #1](https://github.com/rxbynerd/hairpin/issues/1). Deployment-wide
+limitations such as single-replica operation and missing API auth are
+listed in [`docs/design.md`](design.md#current-limitations).
