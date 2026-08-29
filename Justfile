@@ -46,6 +46,14 @@ memory-smoke-test:
 openrouter op_ref="":
     ./scripts/dev/openrouter.sh {{op_ref}}
 
+# Build+load haybale, deploy an in-cluster gitea, and wire the "git" profile.
+haybale:
+    ./scripts/dev/haybale.sh
+
+# Submit a job through the "git" profile and assert the push landed in gitea.
+git-smoke-test:
+    ./scripts/dev/git-smoke-test.sh
+
 # Destroy the kind development cluster.
 kind-down:
     ./scripts/dev/kind-down.sh

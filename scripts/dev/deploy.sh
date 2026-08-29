@@ -9,6 +9,12 @@
 # Billet and steeplechase get the same treatment when a sibling checkout
 # is present at BILLET_DIR or STEEPLECHASE_DIR, so a change to the memory
 # store or the collector can be exercised without publishing it.
+#
+# hairpin.yaml's --sandbox-token-key needs a real keypair to start (see
+# examples/k8s/sandbox-token.yaml) whether or not haybale is ever
+# deployed, so this script generates a throwaway dev one via `hairpin
+# keygen` and pushes both halves into the cluster before hairpin.yaml is
+# applied.
 
 set -euo pipefail
 
@@ -58,6 +64,8 @@ billet_archive="${workdir}/billet.tar"
 steeplechase_archive="${workdir}/steeplechase.tar"
 billet_local=false
 steeplechase_local=false
+keydir="${workdir}/sandbox-token"
+mkdir -p "${keydir}"
 trap 'rm -rf "${workdir}"' EXIT INT TERM
 
 log "building ${IMAGE}..."
@@ -117,8 +125,22 @@ log "applying manifests..."
     -f "${REPO_ROOT}/examples/k8s/redis.yaml" \
     -f "${REPO_ROOT}/examples/k8s/billet.yaml" \
     -f "${REPO_ROOT}/examples/k8s/steeplechase.yaml" \
-    -f "${REPO_ROOT}/examples/k8s/profiles.yaml" \
-    -f "${REPO_ROOT}/examples/k8s/hairpin.yaml"
+    -f "${REPO_ROOT}/examples/k8s/profiles.yaml"
+
+# A throwaway dev keypair, regenerated on every deploy, never the static
+# placeholder in examples/k8s/sandbox-token.yaml. Both halves are pushed
+# together so hairpin and haybale always hold the same pair.
+log "generating a dev-only sandbox-token keypair..."
+(cd "${REPO_ROOT}" && go build -o "${keydir}/hairpin" ./cmd/hairpin)
+"${keydir}/hairpin" keygen --out "${keydir}/key.pem" --jwks-out "${keydir}/jwks.json"
+"${KUBECTL[@]}" -n hairpin create secret generic hairpin-sandbox-token-key \
+    --from-file=key.pem="${keydir}/key.pem" \
+    --dry-run=client -o yaml | "${KUBECTL[@]}" apply -f -
+"${KUBECTL[@]}" -n hairpin create configmap haybale-jwks \
+    --from-file=jwks.json="${keydir}/jwks.json" \
+    --dry-run=client -o yaml | "${KUBECTL[@]}" apply -f -
+
+"${KUBECTL[@]}" apply -f "${REPO_ROOT}/examples/k8s/hairpin.yaml"
 
 # The fake provider ships its own hairpin-profiles ConfigMap, replacing
 # the reference one so the default profile points at it.

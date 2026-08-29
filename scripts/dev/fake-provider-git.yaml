@@ -1,0 +1,144 @@
+# A second stand-in model provider, dedicated to the "git" profile: it
+# drives one run_command that clones through haybale, writes a file,
+# commits, and pushes back through haybale — proving the proxy path
+# end to end, not just that a sandbox Pod exists.
+#
+# Kept separate from fake-provider.yaml rather than changing its PROBE:
+# the default profile's sandbox has no HAYBALE_TOKEN/GIT_CONFIG_* env
+# (no sandboxIdentity/gitProxy configured), so a git command there would
+# just fail, breaking the existing smoke-test.sh for no reason.
+#
+# The clone URL below uses "gitea" as a bare hostname: it is never
+# resolved over DNS. GitProxyConfig's hosts=["gitea"] makes the harness
+# rewrite "https://gitea/..." to haybale's URL via `url.<base>.insteadOf`
+# before git ever opens a connection — see haybale's
+# docs/stirrup-integration.md. Point a "git" profile's provider at
+# http://fake-provider-git.hairpin.svc:8080/v1.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-provider-git
+  namespace: hairpin
+data:
+  server.py: |
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    PROBE = " && ".join([
+        "git config --global user.email hairpin-dev@example.com",
+        "git config --global user.name hairpin-dev",
+        "git clone https://gitea/hairpin-dev/e2e-repo.git /tmp/repo",
+        "cd /tmp/repo",
+        "echo hairpin-git-proxy-smoke-test >> PROOF.md",
+        "git add PROOF.md",
+        "git commit -m 'hairpin git-proxy smoke test'",
+        "git push",
+    ])
+
+    def chunk(delta, finish=None):
+        return {
+            "id": "fake-git-1",
+            "object": "chat.completion.chunk",
+            "model": "fake-model",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+
+    def tool_call_turn():
+        args = json.dumps({"command": PROBE, "timeout": 60})
+        return [
+            chunk({"role": "assistant", "content": ""}),
+            chunk({"tool_calls": [{
+                "index": 0,
+                "id": "call_git_probe",
+                "type": "function",
+                "function": {"name": "run_command", "arguments": args},
+            }]}),
+            chunk({}, "tool_calls"),
+        ]
+
+    def final_turn():
+        return [
+            chunk({"role": "assistant", "content": ""}),
+            chunk({"content": "Git proxy probe complete."}),
+            chunk({}, "stop"),
+        ]
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, fmt, *args):
+            print("fake-provider-git: " + fmt % args, flush=True)
+
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            request = json.loads(body or b"{}")
+            messages = request.get("messages", [])
+            saw_tool_result = any(m.get("role") == "tool" for m in messages)
+            chunks = final_turn() if saw_tool_result else tool_call_turn()
+            self.log_message("%d messages, tool result seen: %s", len(messages), saw_tool_result)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for c in chunks:
+                self.wfile.write(self.sse("data: " + json.dumps(c) + "\n\n"))
+            self.wfile.write(self.sse("data: [DONE]\n\n"))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+
+        def sse(self, payload):
+            raw = payload.encode()
+            return b"%x\r\n%s\r\n" % (len(raw), raw)
+
+    ThreadingHTTPServer(("", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-provider-git
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: fake-provider-git
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fake-provider-git
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fake-provider-git
+    spec:
+      containers:
+        - name: fake-provider-git
+          image: docker.io/library/python:3.13-alpine
+          command: ["python3", "/srv/server.py"]
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: server
+              mountPath: /srv
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: server
+          configMap:
+            name: fake-provider-git
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-provider-git
+  namespace: hairpin
+spec:
+  selector:
+    app.kubernetes.io/name: fake-provider-git
+  ports:
+    - port: 8080
+      targetPort: http
