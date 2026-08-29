@@ -26,16 +26,19 @@ sync-proto stirrup_dir="../stirrup":
 image tag="localhost/hairpin:dev":
     podman build -t {{tag}} -f Containerfile .
 
-# Development cluster: create, deploy, exercise, destroy.
+# Create the kind development cluster.
 kind-up:
     ./scripts/dev/kind-up.sh
 
+# Build hairpin, load it into the cluster, and apply the manifests.
 deploy:
     ./scripts/dev/deploy.sh
 
+# Submit one job against the cluster and assert it ran in a sandbox Pod.
 smoke-test:
     ./scripts/dev/smoke-test.sh
 
+# Destroy the kind development cluster.
 kind-down:
     ./scripts/dev/kind-down.sh
 
