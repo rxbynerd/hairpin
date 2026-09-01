@@ -14,8 +14,8 @@ when the harness dials back in, records everything the harness
 streams, and lets the original caller — or anyone else, such as the
 bundled web UI — retrieve status, events, and the result by job ID.
 
-The name follows the equestrianism series (stirrup, haybale): a
-hairpin is the turn that reverses the direction of travel.
+The name follows the equestrianism series (stirrup, haybale, billet):
+a hairpin is the turn that reverses the direction of travel.
 
 ## Flow
 
@@ -27,6 +27,7 @@ caller ──SubmitJob──▶ hairpin ──creates──▶ K8s Job (stirrup 
                                ready.id = CONTROL_PLANE_SESSION_ID
                                         = "<job id>.<session token>")
 caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ hairpin ──▶ Redis
+harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemory──▶ billet
 ```
 
 `SubmitJob` returns as soon as the job is durable; hairpin then drives
@@ -35,6 +36,19 @@ a terminal status in the background. Poll `GetJob`, stream `WatchJob`,
 or open the web UI to follow along. See
 [`docs/design.md`](docs/design.md) for the full lifecycle and
 component breakdown.
+
+### Shared memory
+
+With `-billet-addr` set, a profile can declare two control-plane tools,
+`search_memory` and `save_memory`, backed by
+[Billet](https://github.com/rxbynerd/billet). The harness raises each
+call up the `RunTask` stream as a `tool_result_request`; hairpin
+proxies it to Billet over gRPC and answers with a
+`tool_result_response`. The sandbox gains no network path to Billet,
+and knowledge one run saves is searchable by the next. Both events are
+recorded on the job timeline. See [`docs/memory.md`](docs/memory.md)
+for the tool contracts, the limits hairpin enforces, and the trust
+posture of a namespace shared by every run.
 
 ## Quick start
 
@@ -46,9 +60,10 @@ per run from the stirrup sandbox image.
 A development cluster, from nothing to a completed run:
 
 ```sh
-just kind-up      # a single-node kind cluster on podman
-just deploy       # build hairpin, load it, apply examples/k8s + a fake provider
-just smoke-test   # submit one job and assert it ran in a sandbox Pod
+just kind-up             # a single-node kind cluster on podman
+just deploy              # build hairpin, load it, apply examples/k8s + a fake provider
+just smoke-test          # submit one job and assert it ran in a sandbox Pod
+just memory-smoke-test   # submit two jobs and assert the second recalls what the first saved
 just kind-down
 ```
 
@@ -58,6 +73,16 @@ key or any egress from the cluster. To run against a real model, `just
 openrouter <op-ref>` adds an OpenRouter-backed `openrouter` profile,
 reading the API key from 1Password; submit with
 `{"profile": "openrouter"}`. Re-run it after each `just deploy`.
+
+The fake provider's run calls the memory tools, so both smoke tests
+depend on two upstream pieces that are not yet published: `just
+deploy` builds Billet from a sibling checkout at `BILLET_DIR` (default
+`../billet`) because `ghcr.io/rxbynerd/billet:latest` does not exist
+until [billet PR #1](https://github.com/rxbynerd/billet/pull/1)
+merges, and the harness must be built from
+[stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) rather
+than the published `stirrup:latest`. See
+[`docs/memory.md`](docs/memory.md#the-development-cluster).
 
 For a real cluster, apply [`examples/k8s/`](examples/k8s/) and supply
 your own provider Secret. An in-cluster hairpin needs almost no
@@ -173,6 +198,7 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | `-redis` | *(empty)* | Redis `host:port`. Empty selects the in-memory store (dev only). |
 | `-redis-password` | *(empty)* | Redis password. |
 | `-redis-db` | `0` | Redis database number. |
+| `-billet-addr` | *(empty)* | `host:port` of Billet's RPC listener, backing the `search_memory` and `save_memory` tools; both halves required, numeric port. Empty disables memory and rejects submits that declare the tools. See [Shared memory](#shared-memory). |
 | `-launcher` | `kubernetes` | Harness launcher: `kubernetes` or `none`. |
 | `-profiles` | *(empty)* | Directory of RunConfig profile templates (`<name>.json`). |
 | `-default-profile` | `default` | Profile used when a submit names none. |
@@ -234,7 +260,16 @@ Within that trusted-network posture, hairpin includes these controls:
 - **Graceful shutdown cancels live runs.** On SIGTERM/SIGINT, hairpin
   sends `cancel` to every live harness session before draining the
   listener, so a restart doesn't strand in-flight jobs stuck `running`
-  with no terminal record.
+  with no terminal record. It then waits for in-flight memory calls so
+  their answers are recorded.
+- **Memory calls are admitted per run, not per request.** A
+  `tool_result_request` is answered only for a tool the job's stored
+  RunConfig declared, at most four at a time and 1000 per run, and a
+  repeated `request_id` is refused. Memory itself is one namespace
+  shared by every run behind a hairpin, and reaching hairpin's API is
+  equivalent to reaching Billet — see
+  [`docs/memory.md`](docs/memory.md#trust-posture) before mixing trust
+  domains on one deployment.
 
 ## Documentation
 
@@ -243,6 +278,7 @@ Within that trusted-network posture, hairpin includes these controls:
 | Architecture, job lifecycle, component responsibilities, Redis layout | [`docs/design.md`](docs/design.md) |
 | `JobService` RPC reference, event types, permission flow, watch/resume semantics | [`docs/api.md`](docs/api.md) |
 | Kubernetes deployment recipe, Redis guidance, operational notes | [`docs/deployment.md`](docs/deployment.md) |
+| Shared memory: the Billet-backed tools, submit and run-time checks, limits, trust posture | [`docs/memory.md`](docs/memory.md) |
 | Reference Kubernetes manifests | [`examples/k8s/`](examples/k8s/) |
 | Current limitations and roadmap | [`TODO.md`](TODO.md) |
 
