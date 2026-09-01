@@ -3,6 +3,8 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -101,6 +103,27 @@ func TestFulfilSaveOutput(t *testing.T) {
 	}
 }
 
+func TestFulfilSearchClampsLimit(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want int32 }{
+		"above the ceiling": {in: 5000, want: maxSearchLimit},
+		"at the ceiling":    {in: maxSearchLimit, want: maxSearchLimit},
+		"below the ceiling": {in: 7, want: 7},
+		"absent":            {in: 0, want: 0},
+		"negative":          {in: -4, want: -4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &stubClient{}
+			if _, isError, _ := Fulfil(context.Background(), c,
+				ToolSearch, fmt.Appendf(nil, `{"query":"x","limit":%d}`, tc.in)); isError {
+				t.Fatal("a well-formed search was rejected")
+			}
+			if c.limit != tc.want {
+				t.Errorf("limit = %d, want %d", c.limit, tc.want)
+			}
+		})
+	}
+}
+
 func TestFulfilSaveOmittedKind(t *testing.T) {
 	c := &stubClient{}
 	if _, isError, _ := Fulfil(context.Background(), c, ToolSave, []byte(`{"content":"a turn"}`)); isError {
@@ -128,6 +151,12 @@ func TestFulfilMalformedInput(t *testing.T) {
 		{"save not an object", ToolSave, `"a fact"`, `save_memory: input must be a JSON object`},
 		{"save missing content", ToolSave, `{"kind":"fact"}`, `save_memory: "content" is required`},
 		{"save unknown kind", ToolSave, `{"content":"x","kind":"opinion"}`, `save_memory: "kind" must be "event" or "fact"`},
+		{
+			"save oversized content",
+			ToolSave,
+			`{"content":"` + strings.Repeat("a", maxContentBytes+1) + `"}`,
+			`save_memory: "content" exceeds the 262144 byte limit`,
+		},
 		{"save kind wrong type", ToolSave, `{"content":"x","kind":7}`, `save_memory: "kind" has the wrong type (got number)`},
 	}
 

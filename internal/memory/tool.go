@@ -18,6 +18,15 @@ const (
 	ToolSave   = "save_memory"
 )
 
+// Billet's own request limits, mirrored here so hairpin does not depend
+// on an unauthenticated service for its resource bounds and so an
+// oversized save is named as the caller's mistake rather than surfacing
+// Billet's transport limit.
+const (
+	maxSearchLimit  = 100
+	maxContentBytes = 256 << 10
+)
+
 // GenericFailureMessage is all a model learns about a Billet failure it
 // did not cause. The detail reaches hairpin's log instead, because the
 // model has no use for it and it may describe hairpin's own deployment.
@@ -75,6 +84,12 @@ func fulfilSearch(ctx context.Context, c Client, input []byte) (string, bool, er
 	if strings.TrimSpace(in.Query) == "" {
 		return ToolSearch + `: "query" is required`, true, nil
 	}
+	// Zero and below stay Billet's to default; only the ceiling is
+	// hairpin's, because an unbounded limit inflates the response, the
+	// control stream frame, and the timeline entry at once.
+	if in.Limit > maxSearchLimit {
+		in.Limit = maxSearchLimit
+	}
 
 	records, err := c.Search(ctx, in.Query, in.Limit)
 	if err != nil {
@@ -105,6 +120,9 @@ func fulfilSave(ctx context.Context, c Client, input []byte) (string, bool, erro
 	}
 	if strings.TrimSpace(in.Content) == "" {
 		return ToolSave + `: "content" is required`, true, nil
+	}
+	if len(in.Content) > maxContentBytes {
+		return fmt.Sprintf("%s: %q exceeds the %d byte limit", ToolSave, "content", maxContentBytes), true, nil
 	}
 	kind := Kind(in.Kind)
 	switch kind {

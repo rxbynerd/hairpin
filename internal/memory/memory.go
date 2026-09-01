@@ -93,12 +93,25 @@ func NewBilletClient(addr string, opts ...Option) Client {
 	return c
 }
 
+// keepaliveTimeout governs the HTTP/2 health checks below. A pooled
+// connection to a Billet that went away without an RST — an evicted Pod,
+// a dropped NAT mapping — is otherwise only discovered by each call
+// spending its whole deadline on it.
+const keepaliveTimeout = 15 * time.Second
+
 // unencryptedHTTP2Transport speaks HTTP/2 without TLS, which is what
 // Billet's RPC listener serves for gRPC clients.
 func unencryptedHTTP2Transport() *http.Transport {
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
-	t := &http.Transport{}
+	t := &http.Transport{
+		IdleConnTimeout: 90 * time.Second,
+		HTTP2: &http.HTTP2Config{
+			PingTimeout:      keepaliveTimeout,
+			SendPingTimeout:  keepaliveTimeout,
+			WriteByteTimeout: keepaliveTimeout,
+		},
+	}
 	t.Protocols = protocols
 	return t
 }

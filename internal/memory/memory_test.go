@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -195,5 +196,51 @@ func TestBilletClientUnreachable(t *testing.T) {
 	}
 	if _, err := c.Save(context.Background(), "content", KindEvent); err == nil {
 		t.Fatal("Save succeeded with no server listening")
+	}
+}
+
+func TestBilletClientRequiresCleartextHTTP2(t *testing.T) {
+	// A server offering only HTTP/1.1 must not be usable: the client's
+	// transport speaks cleartext HTTP/2 alone, which is what makes the
+	// no-TLS gRPC path work at all.
+	mux := http.NewServeMux()
+	mux.Handle(billetv1connect.NewMemoryServiceHandler(&fakeService{}))
+
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	c := NewBilletClient(srv.Listener.Addr().String())
+	if _, err := c.Search(context.Background(), "anything", 0); err == nil {
+		t.Error("Search succeeded against an HTTP/1.1-only server")
+	}
+	if _, err := c.Save(context.Background(), "content", KindEvent); err == nil {
+		t.Error("Save succeeded against an HTTP/1.1-only server")
+	}
+}
+
+func TestBilletTransportKeepsConnectionsChecked(t *testing.T) {
+	tr := unencryptedHTTP2Transport()
+	if tr.HTTP2 == nil {
+		t.Fatal("transport has no HTTP/2 configuration")
+	}
+	if tr.HTTP2.PingTimeout == 0 || tr.HTTP2.SendPingTimeout == 0 || tr.HTTP2.WriteByteTimeout == 0 {
+		t.Errorf("keepalive timeouts unset: %+v", tr.HTTP2)
+	}
+	if tr.IdleConnTimeout == 0 {
+		t.Error("IdleConnTimeout unset: a blackholed connection would be pooled indefinitely")
+	}
+}
+
+func TestWithCallTimeoutOverridesDefault(t *testing.T) {
+	c := NewBilletClient("127.0.0.1:1", WithCallTimeout(time.Millisecond)).(*billetClient)
+	if c.timeout != time.Millisecond {
+		t.Errorf("timeout = %v, want the override", c.timeout)
+	}
+	if got := NewBilletClient("127.0.0.1:1", WithCallTimeout(0)).(*billetClient).timeout; got != CallTimeout {
+		t.Errorf("timeout = %v, want the default kept for a non-positive override", got)
 	}
 }
