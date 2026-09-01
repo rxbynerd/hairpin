@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"time"
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/memory"
@@ -23,6 +24,14 @@ func validateControlPlaneTools(tools []*harnessv1.ControlPlaneToolConfig, memory
 		if !memoryEnabled {
 			return fmt.Errorf("control-plane tool %q needs a memory backend, but hairpin was started without -billet-addr: %w",
 				name, ErrInvalidArgument)
+		}
+		// A declared wait shorter than hairpin's own call timeout
+		// abandons calls that Billet still commits: the model is told
+		// the save failed and retries, leaving duplicate records. Zero
+		// keeps the harness default, which is comfortably longer.
+		if secs := t.GetTimeoutSeconds(); secs != 0 && time.Duration(secs)*time.Second < memory.CallTimeout {
+			return fmt.Errorf("control-plane tool %q sets timeoutSeconds=%d, shorter than hairpin's %s memory call timeout: %w",
+				name, secs, memory.CallTimeout, ErrInvalidArgument)
 		}
 	}
 	return nil

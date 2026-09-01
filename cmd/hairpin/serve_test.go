@@ -21,6 +21,8 @@ func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
 		{name: "unknown sandbox runtime", flag: "-sandbox-runtime=runsc", wantErr: "unknown sandbox runtime"},
 		{name: "billet address without a port", flag: "-billet-addr=billet.hairpin.svc", wantErr: "billet address must be host:port"},
 		{name: "billet address without a host", flag: "-billet-addr=:8141", wantErr: "billet address must be host:port"},
+		{name: "billet address with a named port", flag: "-billet-addr=billet.hairpin.svc:rpc", wantErr: "port must be a number"},
+		{name: "billet address with an out-of-range port", flag: "-billet-addr=billet.hairpin.svc:70000", wantErr: "port must be a number"},
 	}
 
 	for _, tt := range tests {

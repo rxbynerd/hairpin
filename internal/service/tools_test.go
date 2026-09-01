@@ -38,6 +38,13 @@ func controlPlaneTool(t *testing.T, name string) *harnessv1.ControlPlaneToolConf
 	}
 }
 
+func toolWithTimeout(t *testing.T, name string, seconds int32) *harnessv1.ControlPlaneToolConfig {
+	t.Helper()
+	tool := controlPlaneTool(t, name)
+	tool.TimeoutSeconds = seconds
+	return tool
+}
+
 // toolsTemplate is a runnable profile declaring tools as its
 // control-plane surface.
 func toolsTemplate(t *testing.T, tools ...*harnessv1.ControlPlaneToolConfig) *harnessv1.RunConfig {
@@ -91,6 +98,22 @@ func TestSubmitControlPlaneToolPreflight(t *testing.T) {
 			tools:         []*harnessv1.ControlPlaneToolConfig{controlPlaneTool(t, "ask_the_operator")},
 			memoryEnabled: true,
 			wantErr:       `"ask_the_operator"`,
+		},
+		{
+			name:          "declared wait shorter than the memory call timeout",
+			tools:         []*harnessv1.ControlPlaneToolConfig{toolWithTimeout(t, memory.ToolSearch, 5)},
+			memoryEnabled: true,
+			wantErr:       "timeoutSeconds=5",
+		},
+		{
+			name:          "declared wait matching the memory call timeout",
+			tools:         []*harnessv1.ControlPlaneToolConfig{toolWithTimeout(t, memory.ToolSearch, int32(memory.CallTimeout.Seconds()))},
+			memoryEnabled: true,
+		},
+		{
+			name:          "declared wait left to the harness default",
+			tools:         []*harnessv1.ControlPlaneToolConfig{toolWithTimeout(t, memory.ToolSave, 0)},
+			memoryEnabled: true,
 		},
 		{
 			name:          "foreign tool alongside a memory tool",

@@ -136,19 +136,25 @@ func serve(cfg *config.Config) error {
 		return err
 	}
 
-	memoryEnabled := cfg.BilletAddr != ""
+	// One client decides both halves of the feature: what a submit may
+	// declare, and what the control plane will answer. Deriving them
+	// separately would let a run pass preflight and then be refused.
+	var memoryClient memory.Client
+	if cfg.BilletAddr != "" {
+		memoryClient = memory.NewBilletClient(cfg.BilletAddr)
+		logger.Info("memory tools enabled", "billet_addr", cfg.BilletAddr)
+	} else {
+		logger.Info("memory tools disabled; submits declaring them are rejected")
+	}
 
 	reg := registry.New()
 	svc := service.New(st, reg, l, profiles, logger,
 		service.WithExecutorDefaults(cfg.Sandbox),
-		service.WithMemoryTools(memoryEnabled))
+		service.WithMemoryTools(memoryClient != nil))
 
-	cpOpts := []controlplane.Option{controlplane.WithLogger(logger)}
-	if memoryEnabled {
-		logger.Info("memory tools enabled", "billet_addr", cfg.BilletAddr)
-		cpOpts = append(cpOpts, controlplane.WithMemory(memory.NewBilletClient(cfg.BilletAddr)))
-	} else {
-		logger.Info("memory tools disabled; submits declaring them are rejected")
+	cpOpts := []controlplane.Option{
+		controlplane.WithLogger(logger),
+		controlplane.WithMemory(memoryClient),
 	}
 
 	cp := controlplane.New(st, reg, cpOpts...)

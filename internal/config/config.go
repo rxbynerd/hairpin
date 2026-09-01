@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -140,6 +141,9 @@ func (c *Config) Validate() error {
 		}
 		if host == "" || port == "" {
 			return fmt.Errorf("billet address must be host:port, got %q", c.BilletAddr)
+		}
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("billet address port must be a number between 1 and 65535, got %q", port)
 		}
 	}
 	if c.RedisDB < 0 {
