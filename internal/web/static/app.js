@@ -54,7 +54,14 @@
     }
   });
 
-  ["tool_call", "tool_result", "status_change", "error"].forEach(function (type) {
+  [
+    "tool_call",
+    "tool_result",
+    "tool_result_request",
+    "tool_result_response",
+    "status_change",
+    "error"
+  ].forEach(function (type) {
     source.addEventListener(type, function (e) {
       appendLine("event-" + type, type + ": " + e.data);
     });
