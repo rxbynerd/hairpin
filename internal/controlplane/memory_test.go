@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
@@ -19,10 +20,11 @@ import (
 // fakeMemory answers memory calls without a Billet. release, when set,
 // holds every call until the test closes it.
 type fakeMemory struct {
-	records []memory.Record
-	result  memory.SaveResult
-	release chan struct{}
-	panics  bool
+	records   []memory.Record
+	result    memory.SaveResult
+	release   chan struct{}
+	panics    bool
+	searchErr error
 
 	mu      sync.Mutex
 	queries []string
@@ -37,7 +39,7 @@ func (f *fakeMemory) Search(_ context.Context, query string, _ int32) ([]memory.
 	if f.panics {
 		panic("billet client exploded")
 	}
-	return f.records, nil
+	return f.records, f.searchErr
 }
 
 func (f *fakeMemory) Save(_ context.Context, content string, _ memory.Kind) (memory.SaveResult, error) {
@@ -563,5 +565,117 @@ func TestRunTaskStreamClosesWhileMemoryCallInFlight(t *testing.T) {
 	}
 	if len(toolResponses(s)) != 0 {
 		t.Error("an answer was delivered after the session closed")
+	}
+}
+
+func TestRunTaskAppliesBilletErrorPolicy(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"caller error passed through": {
+			err:  connect.NewError(connect.CodeInvalidArgument, errors.New("search_memory: query must not be empty")),
+			want: "search_memory: query must not be empty",
+		},
+		"budget exhaustion passed through": {
+			err:  connect.NewError(connect.CodeResourceExhausted, errors.New("budget exceeded")),
+			want: "budget exceeded",
+		},
+		"internal failure withheld": {
+			err:  connect.NewError(connect.CodeUnavailable, errors.New("billet.hairpin.svc:8141: connection refused")),
+			want: memory.GenericFailureMessage,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, st, _ := testHandler(t)
+			h.memory = &fakeMemory{searchErr: tc.err}
+			seedToolJob(t, st, "hp-err", memory.ToolSearch)
+
+			s := newFakeStream(
+				ready("hp-err"),
+				toolRequest("t-1", memory.ToolSearch, `{"query":"x"}`),
+				&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+			)
+			s.onReceive = func(n int) {
+				if n == 2 {
+					waitFor(t, "the answer", func() bool { return len(toolResponses(s)) == 1 })
+				}
+			}
+			if err := h.runTask(context.Background(), s); err != nil {
+				t.Fatalf("runTask: %v", err)
+			}
+
+			resps := toolResponses(s)
+			if len(resps) != 1 {
+				t.Fatalf("responses = %v, want one", s.types())
+			}
+			if !resps[0].GetIsError().GetValue() {
+				t.Error("a failed call was answered as a success")
+			}
+			if got := resps[0].GetContent(); got != tc.want {
+				t.Errorf("content = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// echoMemory answers each search with the query itself, holding it until
+// that query's gate is closed, so a test can control completion order.
+type echoMemory struct {
+	gates map[string]chan struct{}
+}
+
+func (e *echoMemory) Search(_ context.Context, query string, _ int32) ([]memory.Record, error) {
+	if gate, ok := e.gates[query]; ok {
+		<-gate
+	}
+	return []memory.Record{{MemoryID: query, Content: query}}, nil
+}
+
+func (e *echoMemory) Save(context.Context, string, memory.Kind) (memory.SaveResult, error) {
+	return memory.SaveResult{}, nil
+}
+
+func TestRunTaskPairsConcurrentAnswersWithTheirRequests(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &echoMemory{gates: map[string]chan struct{}{
+		"first":  make(chan struct{}),
+		"second": make(chan struct{}),
+	}}
+	h.memory = mem
+	seedToolJob(t, st, "hp-order", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-order"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"first"}`),
+		toolRequest("t-2", memory.ToolSearch, `{"query":"second"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n != 3 {
+			return
+		}
+		// Answer in the reverse of the request order.
+		close(mem.gates["second"])
+		waitFor(t, "the second answer", func() bool { return len(toolResponses(s)) == 1 })
+		close(mem.gates["first"])
+		waitFor(t, "the first answer", func() bool { return len(toolResponses(s)) == 2 })
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	resps := toolResponses(s)
+	if got := resps[0].GetRequestId(); got != "t-2" {
+		t.Errorf("first answer was for %q, want the request released first", got)
+	}
+	want := map[string]string{"t-1": "first", "t-2": "second"}
+	for _, resp := range resps {
+		if !strings.Contains(resp.GetContent(), want[resp.GetRequestId()]) {
+			t.Errorf("request %q answered with %s, want the %q records",
+				resp.GetRequestId(), resp.GetContent(), want[resp.GetRequestId()])
+		}
 	}
 }
