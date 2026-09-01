@@ -27,9 +27,16 @@ and what the harness's RBAC is for, is in
 
 - `hairpin.yaml`: `containers[0].image` — a built-and-pushed hairpin
   image. The stirrup harness and sandbox images already default to
-  their published tags.
+  their published tags; the memory tools need a harness built from
+  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586)
+  until it merges.
+- `billet.yaml`: `containers[0].image` — `ghcr.io/rxbynerd/billet:latest`
+  is not published until
+  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) merges, so
+  point this at a Billet image built from that branch.
 - `profiles.yaml`: the `default` profile's model and permission
-  policy, or add profiles of your own.
+  policy, or add profiles of your own. The profile declares the memory
+  tools; a profile that omits them is opted out.
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
   other `secret://`-referenced keys your profiles need.
 
