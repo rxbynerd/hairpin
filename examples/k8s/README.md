@@ -2,8 +2,8 @@
 
 A minimal, applyable starting point for running hairpin on a cluster:
 hairpin itself, the three identities involved in a run, a bare-bones
-Redis, the profiles hairpin serves, and a placeholder Secret for
-provider API keys.
+Redis, Billet for shared memory, the profiles hairpin serves, and a
+placeholder Secret for provider API keys.
 
 Full narrative, including the trust boundary the two namespaces draw
 and what the harness's RBAC is for, is in
@@ -17,6 +17,7 @@ and what the harness's RBAC is for, is in
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `create` verb its Job launcher uses. |
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity that creates and execs into sandbox Pods, and the token-less `stirrup-sandbox` identity those Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise. |
+| `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only. |
 | `profiles.yaml` | ConfigMap | RunConfig profile templates, mounted at `--profiles`. |
 | `hairpin.yaml` | Deployment + Service | hairpin itself. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
