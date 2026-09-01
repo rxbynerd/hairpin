@@ -16,6 +16,8 @@
 set -euo pipefail
 
 NAMESPACE="${HAIRPIN_NAMESPACE:-hairpin}"
+CLUSTER_NAME="${HAIRPIN_CLUSTER_NAME:-hairpin}"
+KUBE_CONTEXT="${HAIRPIN_KUBE_CONTEXT:-kind-${CLUSTER_NAME}}"
 PORT="${HAIRPIN_PORT:-8130}"
 BILLET_PORT="${BILLET_PORT:-8141}"
 BASE="http://localhost:${PORT}"
@@ -24,14 +26,24 @@ BILLET_BASE="http://localhost:${BILLET_PORT}"
 log()  { printf '[memory-smoke] %s\n' "$*"; }
 fail() { printf '[memory-smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 
+# Pinned so the probe cannot be answered by whichever cluster the shell
+# last selected.
+KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
+
 # A nonce keeps each invocation's memories distinguishable from those
 # left in Billet by earlier runs.
 nonce="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 
 submit() {
-    curl -fsS --max-time 10 "${BASE}/hairpin.v1.JobService/SubmitJob" \
-        -H 'Content-Type: application/json' \
-        -d "{\"prompt\": \"$1\"}" \
+    local response=""
+    for _ in $(seq 1 5); do
+        response="$(curl -fsS --max-time 10 "${BASE}/hairpin.v1.JobService/SubmitJob" \
+            -H 'Content-Type: application/json' \
+            -d "{\"prompt\": \"$1\"}")" && break
+        ensure_forward || fail "hairpin is unreachable on ${BASE}"
+    done
+    [ -n "${response}" ] || fail "submitting '$1' failed five times"
+    printf '%s' "${response}" \
         | python3 -c 'import sys, json; print(json.load(sys.stdin)["job"]["id"])'
 }
 
@@ -40,8 +52,14 @@ await() {
     local job_id="$1"
     local response status=""
     for _ in $(seq 1 60); do
-        response="$(curl -fsS --max-time 10 "${BASE}/hairpin.v1.JobService/GetJob" \
-            -H 'Content-Type: application/json' -d "{\"id\": \"${job_id}\"}")"
+        # A dropped port-forward is a fact about the tunnel, not about
+        # the job: re-establish it and keep polling.
+        if ! response="$(curl -fsS --max-time 10 "${BASE}/hairpin.v1.JobService/GetJob" \
+            -H 'Content-Type: application/json' -d "{\"id\": \"${job_id}\"}")"; then
+            ensure_forward || fail "hairpin is unreachable on ${BASE}"
+            sleep 2
+            continue
+        fi
         status="$(printf '%s' "${response}" \
             | python3 -c 'import sys, json; print(json.load(sys.stdin)["job"]["status"])')"
         case "${status}" in
@@ -54,19 +72,35 @@ await() {
     printf '%s' "${response}"
 }
 
-kubectl -n "${NAMESPACE}" port-forward "svc/hairpin" "${PORT}:8130" >/dev/null 2>&1 &
-forward_pid=$!
-kubectl -n "${NAMESPACE}" port-forward "svc/billet" "${BILLET_PORT}:8141" >/dev/null 2>&1 &
+start_forward() {
+    "${KUBECTL[@]}" -n "${NAMESPACE}" port-forward "svc/hairpin" "${PORT}:8130" >/dev/null 2>&1 &
+    forward_pid=$!
+}
+
+# Wait for the tunnel, restarting it once if it never comes up.
+ensure_forward() {
+    for attempt in 1 2; do
+        for _ in $(seq 1 30); do
+            if curl -fsS --max-time 5 "${BASE}/healthz" >/dev/null 2>&1; then
+                return 0
+            fi
+            sleep 1
+        done
+        [ "${attempt}" = 1 ] || return 1
+        log "re-establishing the hairpin port-forward..."
+        kill "${forward_pid}" 2>/dev/null || true
+        start_forward
+    done
+    return 1
+}
+
+start_forward
+"${KUBECTL[@]}" -n "${NAMESPACE}" port-forward "svc/billet" "${BILLET_PORT}:8141" >/dev/null 2>&1 &
 billet_forward_pid=$!
-trap 'kill "${forward_pid}" "${billet_forward_pid}" 2>/dev/null || true' EXIT
+trap 'kill "${forward_pid}" "${billet_forward_pid}" 2>/dev/null || true' EXIT INT TERM
 
 log "waiting for the port-forward..."
-for _ in $(seq 1 30); do
-    if curl -fsS --max-time 5 "${BASE}/healthz" >/dev/null 2>&1; then break; fi
-    sleep 1
-done
-curl -fsS --max-time 5 "${BASE}/healthz" >/dev/null \
-    || fail "hairpin did not become reachable on ${BASE}"
+ensure_forward || fail "hairpin did not become reachable on ${BASE}"
 
 log "submitting the job that saves (nonce ${nonce})..."
 job_a="$(submit "memory-smoke ${nonce}")"

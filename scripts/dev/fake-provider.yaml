@@ -49,8 +49,8 @@ data:
             chunk({}, "stop"),
         ]
 
+    # Flattens a message's content, which may be a string or parts.
     def text_of(content):
-        """Flatten a message's content, which may be a string or parts."""
         if isinstance(content, str):
             return content
         if isinstance(content, list):
