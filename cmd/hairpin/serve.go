@@ -136,15 +136,19 @@ func serve(cfg *config.Config) error {
 		return err
 	}
 
+	memoryEnabled := cfg.BilletAddr != ""
+
 	reg := registry.New()
-	svc := service.New(st, reg, l, profiles, logger, service.WithExecutorDefaults(cfg.Sandbox))
+	svc := service.New(st, reg, l, profiles, logger,
+		service.WithExecutorDefaults(cfg.Sandbox),
+		service.WithMemoryTools(memoryEnabled))
 
 	cpOpts := []controlplane.Option{controlplane.WithLogger(logger)}
-	if cfg.BilletAddr != "" {
+	if memoryEnabled {
 		logger.Info("memory tools enabled", "billet_addr", cfg.BilletAddr)
 		cpOpts = append(cpOpts, controlplane.WithMemory(memory.NewBilletClient(cfg.BilletAddr)))
 	} else {
-		logger.Info("memory tools disabled; runs calling them are refused")
+		logger.Info("memory tools disabled; submits declaring them are rejected")
 	}
 
 	mux := http.NewServeMux()
