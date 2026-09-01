@@ -3,7 +3,6 @@ package controlplane
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -36,9 +35,17 @@ type eventPump struct {
 	lastEventFlush time.Time
 
 	permissionsSeen int
+
+	// Memory admission state, all owned by the pump goroutine. The
+	// semaphore is the one piece the fulfilment goroutines touch, and
+	// only to release their slot.
+	declaredTools  map[string]struct{}
+	memoryInFlight chan struct{}
+	memoryRequests map[string]struct{}
+	memoryCalls    int
 }
 
-func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventPump {
+func (h *Handler) pump(ctx context.Context, jobID string, sess *session, declaredTools map[string]struct{}) *eventPump {
 	now := h.now()
 	return &eventPump{
 		h: h,
@@ -50,6 +57,9 @@ func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventP
 		sess:           sess,
 		lastEventAt:    now,
 		lastEventFlush: now,
+		declaredTools:  declaredTools,
+		memoryInFlight: make(chan struct{}, h.maxInFlightMemory),
+		memoryRequests: make(map[string]struct{}),
 	}
 }
 
@@ -227,27 +237,30 @@ func (p *eventPump) refuseSandboxToken(ev *harnessv1.HarnessEvent) {
 	}
 }
 
-// fulfilToolResult answers a control-plane tool call. Memory tools are
-// proxied to Billet on their own goroutine so a slow backend cannot
-// stall the event pump: the harness keeps streaming deltas and
+// fulfilToolResult answers a control-plane tool call. An admitted memory
+// tool is proxied to Billet on its own goroutine so a slow backend
+// cannot stall the event pump: the harness keeps streaming deltas and
 // heartbeats while the call is in flight, and the response is sent
-// whenever it arrives. Anything hairpin does not fulfil is refused
-// inline.
+// whenever it arrives. Every other request is refused inline.
 func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 	tool := ev.GetToolName()
 	requestID := ev.GetRequestId()
 
-	if !memory.IsMemoryTool(tool) {
-		p.sendToolResult(requestID, fmt.Sprintf("hairpin does not fulfil the tool %q", tool), true)
+	// A correlation id this long cannot be echoed back safely, and the
+	// harness has no use for an answer it cannot match.
+	if len(requestID) > maxRequestIDBytes {
+		p.h.log.Warn("ignoring tool_result_request with an oversized request id",
+			"job_id", p.jobID, "tool", tool, "request_id_bytes", len(requestID))
 		return
 	}
-	if p.h.memory == nil {
-		p.sendToolResult(requestID, memoryDisabledRefusal, true)
+	if refusal, ok := p.admitMemoryCall(tool, requestID); !ok {
+		p.sendToolResult(requestID, refusal, true)
 		return
 	}
 
 	input := append([]byte(nil), ev.GetInput()...)
 	go func() {
+		defer func() { <-p.memoryInFlight }()
 		content, isError, detail := memory.Fulfil(p.ctx, p.h.memory, tool, input)
 		if detail != nil {
 			p.h.log.Error("memory tool call failed",
@@ -255,6 +268,33 @@ func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 		}
 		p.sendToolResult(requestID, content, isError)
 	}()
+}
+
+// admitMemoryCall decides whether one request may reach Billet, taking
+// an in-flight slot when it may. It reports the refusal to send back
+// otherwise. Undeclared and unknown tools share a refusal so the answer
+// carries no information about the run's configuration.
+func (p *eventPump) admitMemoryCall(tool, requestID string) (string, bool) {
+	if _, declared := p.declaredTools[tool]; !declared || !memory.IsMemoryTool(tool) {
+		return memory.UnsupportedToolMessage(tool), false
+	}
+	if p.h.memory == nil {
+		return memoryDisabledRefusal, false
+	}
+	if _, seen := p.memoryRequests[requestID]; seen {
+		return duplicateRequestRefusal, false
+	}
+	if p.memoryCalls >= p.h.maxMemoryCalls {
+		return memoryCallLimitRefusal, false
+	}
+	select {
+	case p.memoryInFlight <- struct{}{}:
+	default:
+		return memoryBusyRefusal, false
+	}
+	p.memoryCalls++
+	p.memoryRequests[requestID] = struct{}{}
+	return "", true
 }
 
 // sendToolResult answers one tool_result_request and records the answer

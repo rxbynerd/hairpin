@@ -60,11 +60,24 @@ const msgStreamClosed = "harness stream closed without done"
 // 60s fail-closed timeout.
 const sandboxTokenRefusal = "hairpin does not issue sandbox identity tokens"
 
-// memoryDisabledRefusal answers a memory tool on a hairpin started
-// without -billet-addr. Like every tool_result_request hairpin cannot
-// fulfil, it is refused at once so the harness does not block for its
-// per-call timeout.
-const memoryDisabledRefusal = "hairpin has no memory backend configured"
+// Refusals for a tool_result_request hairpin will not answer. Each is
+// sent at once so the harness does not block for its per-call timeout.
+const (
+	memoryDisabledRefusal   = "hairpin has no memory backend configured"
+	memoryBusyRefusal       = "hairpin is already running the maximum number of concurrent memory calls for this job"
+	memoryCallLimitRefusal  = "this job has exceeded hairpin's memory-call limit"
+	duplicateRequestRefusal = "hairpin has already accepted a memory call with this request id"
+)
+
+// Bounds on the memory calls one harness stream may drive. The request
+// ids, tool names, and call rate are all harness-controlled, and every
+// call holds a copy of its input and an HTTP/2 stream to a single Billet
+// deployment shared by every job.
+const (
+	defaultMaxInFlightMemory = 4
+	defaultMaxMemoryCalls    = 1000
+	maxRequestIDBytes        = 128
+)
 
 // Tuning defaults for the event pump.
 const (
@@ -86,11 +99,13 @@ type Handler struct {
 	log    *slog.Logger
 	memory memory.Client
 
-	now              func() time.Time
-	lastEventFlush   time.Duration
-	deltaFlushEvery  time.Duration
-	deltaFlushBytes  int
-	maxFinalTextByte int
+	now               func() time.Time
+	lastEventFlush    time.Duration
+	deltaFlushEvery   time.Duration
+	deltaFlushBytes   int
+	maxFinalTextByte  int
+	maxInFlightMemory int
+	maxMemoryCalls    int
 }
 
 // Option configures a Handler.
@@ -118,14 +133,16 @@ func WithMemory(c memory.Client) Option {
 // streams into reg so API handlers can route control events onto them.
 func New(st store.Store, reg *registry.Registry, opts ...Option) *Handler {
 	h := &Handler{
-		store:            st,
-		reg:              reg,
-		log:              slog.Default(),
-		now:              time.Now,
-		lastEventFlush:   defaultLastEventFlush,
-		deltaFlushEvery:  defaultDeltaFlushEvery,
-		deltaFlushBytes:  defaultDeltaFlushBytes,
-		maxFinalTextByte: job.MaxFinalTextBytes,
+		store:             st,
+		reg:               reg,
+		log:               slog.Default(),
+		now:               time.Now,
+		lastEventFlush:    defaultLastEventFlush,
+		deltaFlushEvery:   defaultDeltaFlushEvery,
+		deltaFlushBytes:   defaultDeltaFlushBytes,
+		maxFinalTextByte:  job.MaxFinalTextBytes,
+		maxInFlightMemory: defaultMaxInFlightMemory,
+		maxMemoryCalls:    defaultMaxMemoryCalls,
 	}
 	for _, o := range opts {
 		o(h)
@@ -264,7 +281,20 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	h.appendStatus(ctx, jobID, job.StatusRunning, started)
 	h.log.Info("harness assigned", "job_id", jobID, "harness_version", first.GetHarnessVersion())
 
-	return h.pump(ctx, jobID, sess).run()
+	return h.pump(ctx, jobID, sess, declaredControlPlaneTools(cfg)).run()
+}
+
+// declaredControlPlaneTools is the set of control-plane tool names the
+// job asked for. A tool the run never declared is refused even when
+// hairpin could fulfil it, so a profile that omits the memory tools is
+// genuinely opted out of them.
+func declaredControlPlaneTools(cfg *harnessv1.RunConfig) map[string]struct{} {
+	tools := cfg.GetTools().GetControlPlane()
+	declared := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		declared[t.GetName()] = struct{}{}
+	}
+	return declared
 }
 
 // parseRunConfig decodes a stored protobuf-JSON RunConfig. It discards

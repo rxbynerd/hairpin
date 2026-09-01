@@ -23,6 +23,14 @@ const (
 // model has no use for it and it may describe hairpin's own deployment.
 const GenericFailureMessage = "memory is unavailable"
 
+// UnsupportedToolMessage is the refusal for a tool hairpin will not
+// answer. Callers use the same wording whether the tool is unknown or
+// merely undeclared by the run, so a harness learns nothing about the
+// deployment from the difference.
+func UnsupportedToolMessage(name string) string {
+	return fmt.Sprintf("hairpin does not fulfil the tool %q", name)
+}
+
 // IsMemoryTool reports whether name is a tool hairpin fulfils.
 func IsMemoryTool(name string) bool {
 	return name == ToolSearch || name == ToolSave
@@ -39,7 +47,7 @@ func Fulfil(ctx context.Context, c Client, toolName string, input []byte) (conte
 	case ToolSave:
 		return fulfilSave(ctx, c, input)
 	default:
-		return fmt.Sprintf("hairpin does not fulfil the tool %q", toolName), true, nil
+		return UnsupportedToolMessage(toolName), true, nil
 	}
 }
 
