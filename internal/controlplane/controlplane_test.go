@@ -412,7 +412,6 @@ func TestRunTaskUnsupportedRequestsAreRecorded(t *testing.T) {
 	s := newFakeStream(
 		ready("hp-unsup"),
 		&harnessv1.HarnessEvent{Type: evBatchSubmission, RequestId: "b-1"},
-		&harnessv1.HarnessEvent{Type: evToolResultRequest, RequestId: "t-1"},
 		ready("hp-unsup"),
 		&harnessv1.HarnessEvent{Type: "future_event", Message: "hello from stirrup 2"},
 		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
@@ -424,7 +423,7 @@ func TestRunTaskUnsupportedRequestsAreRecorded(t *testing.T) {
 	if got := s.types(); !equalStrings(got, []string{ctlTaskAssignment}) {
 		t.Fatalf("controls = %v, want only the assignment", got)
 	}
-	want := []string{EventStatusChange, evBatchSubmission, evToolResultRequest, "future_event", evDone, EventStatusChange}
+	want := []string{EventStatusChange, evBatchSubmission, "future_event", evDone, EventStatusChange}
 	if got := eventTypes(events(t, st, "hp-unsup")); !equalStrings(got, want) {
 		t.Errorf("timeline = %v, want %v", got, want)
 	}

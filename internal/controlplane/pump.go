@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/job"
+	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/store"
 )
 
@@ -125,7 +127,11 @@ func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 		p.appendProto(ev, now)
 		p.refuseSandboxToken(ev)
 
-	case evBatchSubmission, evToolResultRequest:
+	case evToolResultRequest:
+		p.appendProto(ev, now)
+		p.fulfilToolResult(ev)
+
+	case evBatchSubmission:
 		p.h.log.Warn("unsupported harness request ignored",
 			"job_id", p.jobID, "type", ev.GetType(), "request_id", ev.GetRequestId())
 		p.appendProto(ev, now)
@@ -219,6 +225,64 @@ func (p *eventPump) refuseSandboxToken(ev *harnessv1.HarnessEvent) {
 		p.h.log.Error("failed to refuse sandbox token request",
 			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
 	}
+}
+
+// fulfilToolResult answers a control-plane tool call. Memory tools are
+// proxied to Billet on their own goroutine so a slow backend cannot
+// stall the event pump: the harness keeps streaming deltas and
+// heartbeats while the call is in flight, and the response is sent
+// whenever it arrives. Anything hairpin does not fulfil is refused
+// inline.
+func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
+	tool := ev.GetToolName()
+	requestID := ev.GetRequestId()
+
+	if !memory.IsMemoryTool(tool) {
+		p.sendToolResult(requestID, fmt.Sprintf("hairpin does not fulfil the tool %q", tool), true)
+		return
+	}
+	if p.h.memory == nil {
+		p.sendToolResult(requestID, memoryDisabledRefusal, true)
+		return
+	}
+
+	input := append([]byte(nil), ev.GetInput()...)
+	go func() {
+		content, isError, detail := memory.Fulfil(p.ctx, p.h.memory, tool, input)
+		if detail != nil {
+			p.h.log.Error("memory tool call failed",
+				"job_id", p.jobID, "tool", tool, "request_id", requestID, "error", detail)
+		}
+		p.sendToolResult(requestID, content, isError)
+	}()
+}
+
+// sendToolResult answers one tool_result_request and records the answer
+// on the timeline. A send after the stream closed fails harmlessly:
+// there is no longer a harness waiting for it.
+func (p *eventPump) sendToolResult(requestID, content string, isError bool) {
+	resp := &harnessv1.ControlEvent{
+		Type:      ctlToolResultResponse,
+		RequestId: requestID,
+		Content:   content,
+		IsError:   &harnessv1.OptionalBool{Value: isError},
+	}
+	if err := p.sess.Send(resp); err != nil {
+		p.h.log.Warn("failed to send tool result",
+			"job_id", p.jobID, "request_id", requestID, "error", err)
+		return
+	}
+	p.appendControl(resp, p.h.now())
+}
+
+func (p *eventPump) appendControl(ev *harnessv1.ControlEvent, at time.Time) {
+	payload, err := protojson.Marshal(ev)
+	if err != nil {
+		p.h.log.Error("failed to encode control event",
+			"job_id", p.jobID, "type", ev.GetType(), "error", err)
+		return
+	}
+	p.append(store.Event{Type: ev.GetType(), PayloadJSON: string(payload), At: at})
 }
 
 // maybeFlushLastEventAt persists the liveness timestamp at a bounded

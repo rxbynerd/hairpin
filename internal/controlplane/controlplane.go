@@ -20,6 +20,7 @@ import (
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/gen/harness/v1/harnessv1connect"
 	"github.com/rxbynerd/hairpin/internal/job"
+	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/store"
 )
@@ -43,6 +44,7 @@ const (
 	ctlTaskAssignment       = "task_assignment"
 	ctlCancel               = "cancel"
 	ctlSandboxTokenResponse = "sandbox_token_response"
+	ctlToolResultResponse   = "tool_result_response"
 )
 
 // EventStatusChange is the synthetic timeline event type hairpin appends
@@ -57,6 +59,12 @@ const msgStreamClosed = "harness stream closed without done"
 // run configs abort immediately instead of waiting out the harness's
 // 60s fail-closed timeout.
 const sandboxTokenRefusal = "hairpin does not issue sandbox identity tokens"
+
+// memoryDisabledRefusal answers a memory tool on a hairpin started
+// without -billet-addr. Like every tool_result_request hairpin cannot
+// fulfil, it is refused at once so the harness does not block for its
+// per-call timeout.
+const memoryDisabledRefusal = "hairpin has no memory backend configured"
 
 // Tuning defaults for the event pump.
 const (
@@ -73,9 +81,10 @@ type stream interface {
 
 // Handler implements harnessv1connect.HarnessServiceHandler.
 type Handler struct {
-	store store.Store
-	reg   *registry.Registry
-	log   *slog.Logger
+	store  store.Store
+	reg    *registry.Registry
+	log    *slog.Logger
+	memory memory.Client
 
 	now              func() time.Time
 	lastEventFlush   time.Duration
@@ -94,6 +103,14 @@ func WithLogger(l *slog.Logger) Option {
 		if l != nil {
 			h.log = l
 		}
+	}
+}
+
+// WithMemory fulfils the memory tools against c. Without it, a run that
+// calls one is refused.
+func WithMemory(c memory.Client) Option {
+	return func(h *Handler) {
+		h.memory = c
 	}
 }
 
