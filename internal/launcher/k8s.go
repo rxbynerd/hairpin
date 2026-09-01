@@ -116,6 +116,7 @@ func (l *K8s) Launch(ctx context.Context, j *job.Job) error {
 							Args:  []string{"job"},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: ptrTo(false),
+								ReadOnlyRootFilesystem:   ptrTo(true),
 								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 							},
 							VolumeMounts: []corev1.VolumeMount{

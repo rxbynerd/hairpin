@@ -50,7 +50,7 @@ enum JobStatus {
   JOB_STATUS_UNSPECIFIED = 0;
   // Accepted and persisted; launcher not yet invoked.
   JOB_STATUS_QUEUED = 1;
-  // Launcher invoked; the Kubernetes Job (or subprocess) is being created.
+  // Launcher invoked; the Kubernetes Job is being created.
   JOB_STATUS_LAUNCHING = 2;
   // Harness started but has not yet dialled back in with "ready".
   JOB_STATUS_AWAITING_HARNESS = 3;
@@ -69,8 +69,9 @@ enum JobStatus {
 
 // Job is the caller-visible record of one submitted task.
 message Job {
-  // Hairpin job ID ("hp-" + lowercase ULID). Also used verbatim as the
-  // stirrup RunConfig run_id and the harness correlation session ID.
+  // Hairpin job ID ("hp-" + lowercase ULID). Also used as the stirrup
+  // RunConfig run_id. Harness correlation uses the authenticated
+  // harness_session returned by SubmitJob.
   string id = 1;
   JobStatus status = 2;
   // The task prompt as submitted (or as carried in an explicit
@@ -94,7 +95,8 @@ message Job {
   google.protobuf.Timestamp started_at = 9;
   google.protobuf.Timestamp finished_at = 10;
   // Last time any event (including heartbeats) arrived from the
-  // harness. Staleness beyond ~30s during RUNNING suggests a hang.
+  // harness. This is flushed at most every 10 seconds; sustained
+  // staleness beyond the heartbeat interval warrants investigation.
   google.protobuf.Timestamp last_event_at = 11;
 }
 
@@ -105,10 +107,11 @@ message SubmitJobRequest {
   // the server's default profile. Mutually exclusive with
   // run_config_json.
   string profile = 2;
-  // Advanced: a complete stirrup RunConfig in protobuf-JSON form, used
-  // verbatim except run_id (forced to the job ID) and prompt (filled
-  // from this request's prompt when the config carries none). The wire
-  // RunConfig receives no CLI defaulting: mode, provider.type,
+  // Advanced: a complete stirrup RunConfig in protobuf-JSON form.
+  // run_id is forced to the job ID; a non-empty request prompt replaces
+  // the config prompt; and unset Kubernetes executor coordinates inherit
+  // the server's sandbox defaults. The wire RunConfig receives no CLI
+  // defaulting: mode, provider.type (or providers), executor.type,
   // max_turns, and timeout must all be explicit.
   string run_config_json = 3;
 }
@@ -133,7 +136,7 @@ message GetJobResponse {
 }
 
 message ListJobsRequest {
-  // Maximum jobs to return; the server defaults and caps this (100).
+  // Maximum jobs to return; the server defaults to 50 and caps at 100.
   int32 limit = 1;
   // Opaque cursor from a previous response.
   string page_token = 2;
@@ -147,7 +150,8 @@ message ListJobsResponse {
 
 // JobEvent is one recorded harness event.
 message JobEvent {
-  // Redis stream ID; also the resume position for WatchJob.after_id.
+  // Opaque store-assigned position; also the resume cursor for
+  // WatchJob.after_id.
   string id = 1;
   // The HarnessEvent type discriminator ("text_delta", "tool_call",
   // "done", ...) plus hairpin-synthesised types ("status_change").
@@ -185,8 +189,9 @@ message PermissionRequest {
   string tool_name = 2;
   // JSON-encoded tool input, as sent by the harness.
   string input_json = 3;
-  // "pending", "allowed", or "denied". A pending request older than the
-  // harness policy timeout has already been auto-denied harness-side.
+  // "pending", "allowed", or "denied". The harness auto-denies after
+  // its policy timeout, but does not notify hairpin, so an expired request
+  // may remain "pending" here.
   string state = 4;
   // Denial reason, when one was given.
   string reason = 5;

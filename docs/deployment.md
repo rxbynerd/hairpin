@@ -13,7 +13,7 @@ That gives three identities, each holding the least it can:
 
 | Identity | Is | Holds |
 |---|---|---|
-| `hairpin` | The server | `create`/`get` on `batch/v1` Jobs in its own namespace. |
+| `hairpin` | The server | `create` on `batch/v1` Jobs in its own namespace. |
 | `stirrup-harness` | The harness Job hairpin launches | Pods, `pods/exec`, and NetworkPolicies in the *sandbox* namespace only. Its token is mounted; the Kubernetes executor authenticates as it. |
 | `stirrup-sandbox` | The sandbox Pod the harness creates | Nothing. Its token is never mounted — it runs untrusted agent commands and has no business reaching the API server. |
 
@@ -23,12 +23,13 @@ point wiring all three together.
 | File | Kind | Purpose |
 |---|---|---|
 | `namespace.yaml` | Namespace ×2 | `hairpin` (server, Redis, harness Jobs) and `hairpin-sandboxes` (the Pods agent commands run in). |
-| `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `batch/v1` Jobs verbs the launcher needs today: create, get. |
+| `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `create` verb its Job launcher uses. |
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity, its sandbox-namespace Role, and the token-less `stirrup-sandbox` identity the sandbox Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise — see [Redis](#redis). |
 | `profiles.yaml` | ConfigMap | The RunConfig profile templates mounted at `--profiles`. |
 | `hairpin.yaml` | Deployment + Service | hairpin itself, wired to the identities, Redis, and profiles above. |
-| `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `-harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and drop this file. |
+| `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `-harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
+| `kustomization.yaml` | Kustomization | Applies the complete reference deployment with namespace resources ordered first. |
 
 ### What to edit before applying
 
@@ -49,12 +50,13 @@ advertises `hairpin.<namespace>.svc` on its listen port.
 ### Apply order
 
 ```sh
-kubectl apply -f examples/k8s/
+kubectl apply -k examples/k8s/
 ```
 
-`kubectl apply` is order-independent within a single invocation, so
-one pass over the directory is enough once the images and Secret are
-edited.
+Use the Kustomization on a new cluster so the namespaces are created
+before namespaced resources. A raw `kubectl apply -f examples/k8s/`
+walks files lexically and can try `hairpin.yaml` before
+`namespace.yaml`.
 
 Submitting a job once the `hairpin` Service is up: port-forward or
 call `JobService/SubmitJob` from another Pod in the cluster (see
@@ -111,12 +113,10 @@ the profile left the field empty.
 | `-sandbox-service-account` | `executor.k8sServiceAccount` |
 | `-sandbox-runtime` | `executor.runtime` |
 
-A profile therefore names only the isolation it wants — the executor
-type and a network mode — and stays portable across deployments; the
-operator running hairpin decides where in the cluster that isolation
-happens and under what identity. A profile that pins its own value
-keeps it, which is how a single hairpin can route one tenant's runs to
-a dedicated namespace or a stricter RuntimeClass.
+A profile can describe the isolation it needs while deployment
+configuration supplies default cluster coordinates. A profile that
+pins its own value keeps it, allowing selected runs to use a dedicated
+namespace or stricter RuntimeClass.
 
 `-sandbox-namespace` defaults to `-namespace`, but the reference
 manifests deliberately separate them. Sandbox Pods run untrusted agent
@@ -217,12 +217,11 @@ Redis restart loses:
   RunConfig, final text, timestamps. `GetJob`/`ListJobs` for jobs
   submitted before the restart return `not_found`.
 - Every recorded event timeline (`hairpin:job:<id>:events`) — the
-  history `WatchJob` and the web UI's SSE feed replay.
-  In-flight harnesses are unaffected (they keep streaming to whichever
-  hairpin process holds the live registry entry), but nothing gets
-  persisted until Redis is back, and a hairpin restart during the
-  outage loses the in-process registry too — see
-  [Single-replica constraint](#single-replica-constraint).
+  history `WatchJob` and the web UI's SSE feed replay. An in-flight
+  harness may remain connected, but subsequent writes fail because its
+  job hash no longer exists; Hairpin does not reconstruct the record.
+  Restarting Hairpin also loses the in-process live-session registry —
+  see [Single-replica constraint](#single-replica-constraint).
 - Pending permission requests (`hairpin:job:<id>:perms`) — an
   in-flight `ask-upstream` approval a caller has not yet answered.
 
@@ -242,21 +241,20 @@ instance a load balancer happens to route it to; if a second replica
 receives an `AnswerPermission` call for that job, it has no session to
 route the decision onto and the call fails with `failed_precondition`.
 `hairpin.yaml`'s Deployment is pinned to `replicas: 1` for this
-reason. Scaling out requires moving the control-event bridge to Redis
-pub/sub or an equivalent shared mechanism — tracked as a deferred v1
-scope cut in [`docs/design.md`](design.md#deliberately-deferred-v1-scope-cuts).
+reason. Scaling out requires a shared control-event bridge with stream
+ownership and failover semantics; see
+[issue #4](https://github.com/rxbynerd/hairpin/issues/4).
 
 ### Heartbeat and staleness
 
-`Job.last_event_at` updates on every event the harness sends,
-including the heartbeat it emits roughly every 30 seconds while
-running (`internal/controlplane/pump.go` flushes this at a bounded
-rate, not on every event, so treat it as accurate to within a few
-seconds rather than exact). A `running` job whose `last_event_at` has
-not advanced for more than ~30-60 seconds is a hung or evicted
-harness worth investigating — poll `GetJob` or watch for `heartbeat`
-events on the timeline to observe this directly; hairpin does not
-currently reap stale jobs on its own (see below).
+`Job.last_event_at` tracks harness activity, including heartbeats sent
+roughly every 30 seconds while running. Hairpin flushes this field at
+most once every 10 seconds rather than on every event, so allow for the
+heartbeat interval, flush delay, scheduling, and polling jitter. A
+value that remains unchanged for well over a minute warrants
+investigation; poll `GetJob` or watch heartbeat events directly.
+Hairpin does not reconcile stale jobs automatically (see
+[issue #3](https://github.com/rxbynerd/hairpin/issues/3)).
 
 ### Job retention
 
@@ -268,14 +266,13 @@ job's event stream is capped at roughly 10,000 entries
 MAXLEN ~` trimming): oldest events are dropped once a single job's
 timeline grows past that, but the job record itself, and every other
 job's data, is kept indefinitely. Operators who need bounded storage
-should manage this externally for now — a periodic sweep deleting
-`hairpin:job:*` keys older than a retention window, or a Redis
-`maxmemory`/eviction policy appropriate for a key space that never
-expires on its own.
+must currently manage terminal-job records externally, taking care to
+remove the job hash, event stream, permission hash, and jobs-index
+member together and never expire a live job. Native retention and
+stale-job reconciliation are tracked in
+[issue #3](https://github.com/rxbynerd/hairpin/issues/3).
 
-This absence is also why `rbac.yaml` grants only `create` and `get` on
-`batch/v1` Jobs: the launcher doesn't list, watch, or delete Jobs
-today, so the Role doesn't carry those verbs. A future reaper — for
-Redis job records or for finished-but-not-yet-`ttlSecondsAfterFinished`
-Kubernetes Jobs — needs `list`/`watch`/`delete` added back to that
-Role before it can run.
+`rbac.yaml` grants only `create` on `batch/v1` Jobs because that is the
+only Kubernetes Job operation the launcher performs. Any future
+reconciler should add only the read/delete verbs its implementation
+requires.

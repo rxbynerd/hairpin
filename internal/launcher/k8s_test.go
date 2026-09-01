@@ -50,7 +50,7 @@ func TestK8sLaunchCreatesJob(t *testing.T) {
 	}
 	l := NewK8sWithClient(client, cfg, "hairpin.hairpin.svc:8130", testLogger())
 
-	j := &job.Job{ID: job.NewID(), RunConfigJSON: runConfigJSON(t, 1800)}
+	j := &job.Job{ID: job.NewID(), HarnessToken: "test-token", RunConfigJSON: runConfigJSON(t, 1800)}
 	if err := l.Launch(context.Background(), j); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
@@ -119,10 +119,14 @@ func TestK8sLaunchCreatesJob(t *testing.T) {
 	if len(container.Args) != 1 || container.Args[0] != "job" {
 		t.Errorf("container args = %v, want [job]", container.Args)
 	}
+	containerSC := container.SecurityContext
+	if containerSC == nil || containerSC.ReadOnlyRootFilesystem == nil || !*containerSC.ReadOnlyRootFilesystem {
+		t.Errorf("expected ReadOnlyRootFilesystem true, got %+v", containerSC)
+	}
 
 	wantEnv := map[string]string{
 		"CONTROL_PLANE_ADDR":       "hairpin.hairpin.svc:8130",
-		"CONTROL_PLANE_SESSION_ID": j.ID,
+		"CONTROL_PLANE_SESSION_ID": j.SessionString(),
 	}
 	gotEnv := map[string]string{}
 	for _, e := range container.Env {

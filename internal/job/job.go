@@ -45,9 +45,9 @@ func (s Status) Terminal() bool {
 	return false
 }
 
-// Job is the persisted record of one submitted task. The ID doubles as
-// the stirrup RunConfig run_id and the CONTROL_PLANE_SESSION_ID the
-// launched harness echoes back for stream correlation.
+// Job is the persisted record of one submitted task. ID is also the
+// stirrup RunConfig run_id. Harnesses correlate with the authenticated
+// session string returned by SessionString, not with the ID alone.
 type Job struct {
 	ID            string
 	Status        Status
@@ -105,9 +105,9 @@ func NewHarnessToken() string {
 	return hex.EncodeToString(b[:])
 }
 
-// SessionString encodes the value launchers place in
-// CONTROL_PLANE_SESSION_ID: "<job id>.<token>", or the bare ID for a
-// job without a token.
+// SessionString encodes the authenticated value launchers place in
+// CONTROL_PLANE_SESSION_ID: "<job id>.<token>". The bare-ID form exists
+// only for legacy records that predate harness tokens.
 func (j *Job) SessionString() string {
 	if j.HarnessToken == "" {
 		return j.ID
@@ -123,7 +123,8 @@ func ParseSession(s string) (id, token string) {
 }
 
 // AcceptsToken reports whether the presented token matches the job's,
-// in constant time. A job with no token accepts only an empty one.
+// in constant time. A legacy job with no stored token accepts only an
+// empty token.
 func (j *Job) AcceptsToken(token string) bool {
 	return subtle.ConstantTimeCompare([]byte(j.HarnessToken), []byte(token)) == 1
 }

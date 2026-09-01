@@ -1,13 +1,11 @@
 # hairpin
 
-Hairpin reverses the client-server direction of
-[stirrup](https://github.com/rxbynerd/stirrup). `stirrup job` is
-intentionally a *client*: it dials the gRPC address in
-`CONTROL_PLANE_ADDR` and asks for work. That is the right shape for an
-organisation running a full control plane, but it asks a lot of
-event-driven callers — a Lambda handling a webhook should not have to
-host a bidirectional gRPC server for the lifetime of a run just to use
-stirrup.
+Hairpin provides a service control plane for
+[stirrup](https://github.com/rxbynerd/stirrup). `stirrup job` is a
+client: it dials the gRPC address in `CONTROL_PLANE_ADDR` and asks for
+work. Hairpin owns that long-lived bidirectional stream so callers such
+as webhook handlers can submit work through a request/response API
+instead of hosting a gRPC server for the lifetime of a run.
 
 Hairpin is that control plane, packaged as a service. A caller submits
 a task over a plain request/response API and gets back a job ID.
@@ -43,8 +41,7 @@ component breakdown.
 Hairpin is a Kubernetes application: it runs inside the cluster whose
 API it uses, launches each run as a `batch/v1` Job from the published
 stirrup harness image, and that harness in turn creates one sandbox Pod
-per run from the stirrup sandbox image. Nothing in the loop is a
-filesystem path to a binary.
+per run from the stirrup sandbox image.
 
 A development cluster, from nothing to a completed run:
 
@@ -130,12 +127,12 @@ A **profile** is a named [protobuf-JSON](https://protobuf.dev/programming-guides
 `RunConfig` template — one `<name>.json` file per profile in the
 directory passed to `-profiles`. `SubmitJob` resolves a task against a
 profile by name (or the server's `-default-profile` when none is
-given), and hairpin fills in two fields before launch:
+given), and hairpin applies these server-owned values before launch:
 
 | Field | Filled with |
 |---|---|
 | `run_id` | The hairpin job ID, forced unconditionally — a caller cannot override it. |
-| `prompt` | The request's `prompt`, but only when the profile carries none. |
+| `prompt` | A non-empty request `prompt`; otherwise the template's prompt is retained. |
 | `executor.image` | `-sandbox-image`, when the template names none. |
 | `executor.k8sNamespace` | `-sandbox-namespace`, when the template names none. |
 | `executor.k8sServiceAccount` | `-sandbox-service-account`, when the template names none. |
@@ -143,13 +140,11 @@ given), and hairpin fills in two fields before launch:
 
 The four executor fields are filled only for the `k8s` and
 `k8s-sandbox` executors, and only where the template left them empty —
-a profile that pins its own sandbox image or namespace keeps it. The
-split is deliberate: a profile says what isolation a run needs, and the
-operator running hairpin says where in the cluster it happens and as
-what identity. A template that names none of them is portable across
-deployments.
+a profile that pins its own sandbox image or namespace keeps it. This
+lets a profile describe its isolation requirements while deployment
+configuration supplies the default cluster location and identity.
 
-Everything else in the template is used verbatim. Unlike `stirrup
+All other template values are preserved. Unlike `stirrup
 harness`'s CLI, there is no defaulting on the wire: `mode`,
 `provider.type` (or a `providers` map), `executor.type`, `max_turns`,
 and `timeout` must all be explicit in the profile or in an explicit
@@ -199,22 +194,20 @@ See [Profiles](#profiles).
 
 `-launcher=none` disables harness launching entirely: jobs sit in
 `awaiting_harness` until something starts a harness out-of-band with
-`CONTROL_PLANE_SESSION_ID` set to the job ID. Useful for tests and for
-driving the harness lifecycle from outside hairpin.
+`CONTROL_PLANE_SESSION_ID` set to the `harnessSession` value returned by
+`SubmitJob`. This mode is useful for tests and external launchers.
 
 ## Trust posture
 
-Hairpin inherits stirrup v0.1's plaintext, unauthenticated gRPC
-posture: run it on a trusted network (cluster-internal Service, mesh
-mTLS). The JobService API and web UI carry no authentication of their
-own either — front them with your ingress's auth. Do not expose either
-port publicly. See [`docs/design.md`](docs/design.md#trust-posture-v01)
-for the full rationale and the features this posture deliberately
-defers.
+Hairpin's single listener uses plaintext h2c. The JobService API and web
+UI do not authenticate or authorize callers, so keep the Service on a
+trusted network and put authentication plus TLS (or mesh mTLS) in front
+of it before exposing it outside the cluster. Per-job harness tokens
+authenticate a harness's claim to one job, but they do not encrypt the
+stream or authenticate API/UI callers. See
+[`docs/design.md`](docs/design.md#trust-posture) for details.
 
-Within that unchanged plaintext/trusted-network posture, hairpin
-hardens the specific risks a shared, unauthenticated control plane
-creates:
+Within that trusted-network posture, hairpin includes these controls:
 
 - **Per-job harness session tokens.** `SubmitJob` mints a random
   128-bit token per job; a harness must present it (as part of
@@ -251,6 +244,7 @@ creates:
 | `JobService` RPC reference, event types, permission flow, watch/resume semantics | [`docs/api.md`](docs/api.md) |
 | Kubernetes deployment recipe, Redis guidance, operational notes | [`docs/deployment.md`](docs/deployment.md) |
 | Reference Kubernetes manifests | [`examples/k8s/`](examples/k8s/) |
+| Current limitations and roadmap | [`TODO.md`](TODO.md) |
 
 ## License
 

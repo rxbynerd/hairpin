@@ -30,7 +30,7 @@ const (
 	JobStatus_JOB_STATUS_UNSPECIFIED JobStatus = 0
 	// Accepted and persisted; launcher not yet invoked.
 	JobStatus_JOB_STATUS_QUEUED JobStatus = 1
-	// Launcher invoked; the Kubernetes Job (or subprocess) is being created.
+	// Launcher invoked; the Kubernetes Job is being created.
 	JobStatus_JOB_STATUS_LAUNCHING JobStatus = 2
 	// Harness started but has not yet dialled back in with "ready".
 	JobStatus_JOB_STATUS_AWAITING_HARNESS JobStatus = 3
@@ -101,8 +101,9 @@ func (JobStatus) EnumDescriptor() ([]byte, []int) {
 // Job is the caller-visible record of one submitted task.
 type Job struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Hairpin job ID ("hp-" + lowercase ULID). Also used verbatim as the
-	// stirrup RunConfig run_id and the harness correlation session ID.
+	// Hairpin job ID ("hp-" + lowercase ULID). Also used as the stirrup
+	// RunConfig run_id. Harness correlation uses the authenticated
+	// harness_session returned by SubmitJob.
 	Id     string    `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Status JobStatus `protobuf:"varint,2,opt,name=status,proto3,enum=hairpin.v1.JobStatus" json:"status,omitempty"`
 	// The task prompt as submitted (or as carried in an explicit
@@ -126,7 +127,8 @@ type Job struct {
 	StartedAt  *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	FinishedAt *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
 	// Last time any event (including heartbeats) arrived from the
-	// harness. Staleness beyond ~30s during RUNNING suggests a hang.
+	// harness. This is flushed at most every 10 seconds; sustained
+	// staleness beyond the heartbeat interval warrants investigation.
 	LastEventAt   *timestamppb.Timestamp `protobuf:"bytes,11,opt,name=last_event_at,json=lastEventAt,proto3" json:"last_event_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -247,10 +249,11 @@ type SubmitJobRequest struct {
 	// the server's default profile. Mutually exclusive with
 	// run_config_json.
 	Profile string `protobuf:"bytes,2,opt,name=profile,proto3" json:"profile,omitempty"`
-	// Advanced: a complete stirrup RunConfig in protobuf-JSON form, used
-	// verbatim except run_id (forced to the job ID) and prompt (filled
-	// from this request's prompt when the config carries none). The wire
-	// RunConfig receives no CLI defaulting: mode, provider.type,
+	// Advanced: a complete stirrup RunConfig in protobuf-JSON form.
+	// run_id is forced to the job ID; a non-empty request prompt replaces
+	// the config prompt; and unset Kubernetes executor coordinates inherit
+	// the server's sandbox defaults. The wire RunConfig receives no CLI
+	// defaulting: mode, provider.type (or providers), executor.type,
 	// max_turns, and timeout must all be explicit.
 	RunConfigJson string `protobuf:"bytes,3,opt,name=run_config_json,json=runConfigJson,proto3" json:"run_config_json,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -456,7 +459,7 @@ func (x *GetJobResponse) GetJob() *Job {
 
 type ListJobsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Maximum jobs to return; the server defaults and caps this (100).
+	// Maximum jobs to return; the server defaults to 50 and caps at 100.
 	Limit int32 `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Opaque cursor from a previous response.
 	PageToken     string `protobuf:"bytes,2,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
@@ -564,7 +567,8 @@ func (x *ListJobsResponse) GetNextPageToken() string {
 // JobEvent is one recorded harness event.
 type JobEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Redis stream ID; also the resume position for WatchJob.after_id.
+	// Opaque store-assigned position; also the resume cursor for
+	// WatchJob.after_id.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// The HarnessEvent type discriminator ("text_delta", "tool_call",
 	// "done", ...) plus hairpin-synthesised types ("status_change").
@@ -830,8 +834,9 @@ type PermissionRequest struct {
 	ToolName  string `protobuf:"bytes,2,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
 	// JSON-encoded tool input, as sent by the harness.
 	InputJson string `protobuf:"bytes,3,opt,name=input_json,json=inputJson,proto3" json:"input_json,omitempty"`
-	// "pending", "allowed", or "denied". A pending request older than the
-	// harness policy timeout has already been auto-denied harness-side.
+	// "pending", "allowed", or "denied". The harness auto-denies after
+	// its policy timeout, but does not notify hairpin, so an expired request
+	// may remain "pending" here.
 	State string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
 	// Denial reason, when one was given.
 	Reason        string                 `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`

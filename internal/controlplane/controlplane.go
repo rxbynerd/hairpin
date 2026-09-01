@@ -116,9 +116,8 @@ func New(st store.Store, reg *registry.Registry, opts ...Option) *Handler {
 	return h
 }
 
-// MaxEventBytes caps a single received HarnessEvent message, bounding
-// memory per stream. Generous against stirrup's own 4 MiB batch-result
-// ceiling; tool results larger than this indicate a broken harness.
+// MaxEventBytes caps a single received HarnessEvent message at 4 MiB,
+// bounding memory used to decode a harness-controlled payload.
 const MaxEventBytes = 4 << 20
 
 // NewHTTPHandler returns the connect route path and handler for
@@ -251,8 +250,9 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	return h.pump(ctx, jobID, sess).run()
 }
 
-// parseRunConfig decodes the stored protojson RunConfig. Unknown fields
-// are tolerated so a profile written for a newer stirrup still launches.
+// parseRunConfig decodes a stored protobuf-JSON RunConfig. It discards
+// unknown fields so persisted records remain readable across compatible
+// schema changes.
 func parseRunConfig(runConfigJSON string) (*harnessv1.RunConfig, error) {
 	if runConfigJSON == "" {
 		return nil, errors.New("run config is empty")
