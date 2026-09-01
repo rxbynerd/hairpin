@@ -258,8 +258,10 @@ func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 }
 
 // sendToolResult answers one tool_result_request and records the answer
-// on the timeline. A send after the stream closed fails harmlessly:
-// there is no longer a harness waiting for it.
+// on the timeline. The record is written whether or not the send lands:
+// an answer that resolves after the harness hung up is exactly what an
+// operator needs to see, and for save_memory it is the only trace that
+// a memory was written.
 func (p *eventPump) sendToolResult(requestID, content string, isError bool) {
 	resp := &harnessv1.ControlEvent{
 		Type:      ctlToolResultResponse,
@@ -270,7 +272,6 @@ func (p *eventPump) sendToolResult(requestID, content string, isError bool) {
 	if err := p.sess.Send(resp); err != nil {
 		p.h.log.Warn("failed to send tool result",
 			"job_id", p.jobID, "request_id", requestID, "error", err)
-		return
 	}
 	p.appendControl(resp, p.h.now())
 }

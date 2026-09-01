@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -252,4 +253,26 @@ func eventsOfType(t *testing.T, st store.Store, jobID, evType string) []store.Ev
 		}
 	}
 	return out
+}
+
+func TestSendToolResultRecordedWhenSendFails(t *testing.T) {
+	h, st, _ := testHandler(t)
+	seedJob(t, st, "hp-gone", job.StatusAwaitingHarness, nil)
+
+	s := newFakeStream()
+	s.failSends(errors.New("stream closed"))
+	p := h.pump(context.Background(), "hp-gone", &session{s: s})
+
+	p.sendToolResult("t-1", `{"records":[]}`, false)
+
+	recorded := eventsOfType(t, st, "hp-gone", ctlToolResultResponse)
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %d responses, want the answer kept despite the failed send", len(recorded))
+	}
+	if got := decodeControl(t, recorded[0].PayloadJSON).GetRequestId(); got != "t-1" {
+		t.Errorf("recorded request_id = %q, want t-1", got)
+	}
+	if len(toolResponses(s)) != 0 {
+		t.Error("a failed send was recorded as delivered")
+	}
 }
