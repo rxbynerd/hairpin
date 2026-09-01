@@ -151,15 +151,18 @@ func (l *K8s) Launch(ctx context.Context, j *job.Job) error {
 	return nil
 }
 
+// jobLabels marks a harness Job. Hairpin's own identity labels are
+// applied after the operator's, because NetworkPolicies select on them:
+// a configured label map that reused one of these keys would move every
+// harness Pod into another workload's allow-set.
 func (l *K8s) jobLabels(jobID string) map[string]string {
-	labels := map[string]string{
-		"app.kubernetes.io/name":       "stirrup",
-		"app.kubernetes.io/managed-by": "hairpin",
-		"hairpin.rxbynerd.dev/job-id":  jobID,
-	}
+	labels := make(map[string]string, len(l.cfg.Labels)+3)
 	for k, v := range l.cfg.Labels {
 		labels[k] = v
 	}
+	labels["app.kubernetes.io/name"] = "stirrup"
+	labels["app.kubernetes.io/managed-by"] = "hairpin"
+	labels["hairpin.rxbynerd.dev/job-id"] = jobID
 	return labels
 }
 
