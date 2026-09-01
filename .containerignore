@@ -4,3 +4,4 @@
 .env*
 docs
 examples
+.claude
