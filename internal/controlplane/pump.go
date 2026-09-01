@@ -259,9 +259,24 @@ func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 	}
 
 	input := append([]byte(nil), ev.GetInput()...)
+	p.h.memoryWait.Add(1)
 	go func() {
+		defer p.h.memoryWait.Done()
 		defer func() { <-p.memoryInFlight }()
-		content, isError, detail := memory.Fulfil(p.ctx, p.h.memory, tool, input)
+		// This goroutine is detached from the request handler, so an
+		// unrecovered panic here would take the process down and leave
+		// every live run without a terminal record.
+		defer func() {
+			if r := recover(); r != nil {
+				p.h.log.Error("memory tool call panicked",
+					"job_id", p.jobID, "tool", tool, "request_id", requestID, "panic", r)
+				p.sendToolResult(requestID, memory.GenericFailureMessage, true)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(p.ctx, memory.CallTimeout)
+		defer cancel()
+		content, isError, detail := memory.Fulfil(ctx, p.h.memory, tool, input)
 		if detail != nil {
 			p.h.log.Error("memory tool call failed",
 				"job_id", p.jobID, "tool", tool, "request_id", requestID, "error", detail)

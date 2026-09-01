@@ -22,6 +22,7 @@ type fakeMemory struct {
 	records []memory.Record
 	result  memory.SaveResult
 	release chan struct{}
+	panics  bool
 
 	mu      sync.Mutex
 	queries []string
@@ -33,6 +34,9 @@ func (f *fakeMemory) Search(_ context.Context, query string, _ int32) ([]memory.
 	f.queries = append(f.queries, query)
 	f.mu.Unlock()
 	f.wait()
+	if f.panics {
+		panic("billet client exploded")
+	}
 	return f.records, nil
 }
 
@@ -482,5 +486,82 @@ func TestRunTaskIgnoresOversizedRequestID(t *testing.T) {
 	}
 	if queries, _ := mem.calls(); len(queries) != 0 {
 		t.Errorf("an unanswerable request reached Billet: %v", queries)
+	}
+}
+
+func TestRunTaskRecoversFromMemoryPanic(t *testing.T) {
+	h, st, _ := testHandler(t)
+	h.memory = &fakeMemory{panics: true}
+	seedToolJob(t, st, "hp-panic", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-panic"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"boom"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n == 2 {
+			waitFor(t, "the recovered answer", func() bool { return len(toolResponses(s)) == 1 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	h.WaitForMemoryCalls()
+
+	resps := toolResponses(s)
+	if len(resps) != 1 {
+		t.Fatalf("responses = %v, want the panic answered", s.types())
+	}
+	if !resps[0].GetIsError().GetValue() || resps[0].GetContent() != memory.GenericFailureMessage {
+		t.Errorf("content = %q (is_error %v), want the generic failure",
+			resps[0].GetContent(), resps[0].GetIsError().GetValue())
+	}
+	if j := getJob(t, st, "hp-panic"); j.Status != job.StatusSucceeded {
+		t.Errorf("status = %q, want the run to have settled normally", j.Status)
+	}
+	if got := len(eventsOfType(t, st, "hp-panic", ctlToolResultResponse)); got != 1 {
+		t.Errorf("recorded %d responses, want 1", got)
+	}
+}
+
+func TestRunTaskStreamClosesWhileMemoryCallInFlight(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{release: make(chan struct{})}
+	h.memory = mem
+	seedToolJob(t, st, "hp-hangup", memory.ToolSearch)
+
+	// No done event: the stream ends under the call, as a crashed or
+	// evicted harness would leave it.
+	s := newFakeStream(
+		ready("hp-hangup"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"orphan"}`),
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	if j := getJob(t, st, "hp-hangup"); j.Status != job.StatusFailed {
+		t.Errorf("status = %q, want failed: the stream closed without done", j.Status)
+	}
+	if len(eventsOfType(t, st, "hp-hangup", ctlToolResultResponse)) != 0 {
+		t.Error("the call answered before it was released")
+	}
+
+	close(mem.release)
+	h.WaitForMemoryCalls()
+
+	// The session is closed, so the answer cannot be delivered, but it
+	// is still auditable — and the wait guarantees the write landed
+	// before a shutdown would close the store.
+	recorded := eventsOfType(t, st, "hp-hangup", ctlToolResultResponse)
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %d responses, want the late answer kept", len(recorded))
+	}
+	if got := decodeControl(t, recorded[0].PayloadJSON).GetRequestId(); got != "t-1" {
+		t.Errorf("recorded request_id = %q, want t-1", got)
+	}
+	if len(toolResponses(s)) != 0 {
+		t.Error("an answer was delivered after the session closed")
 	}
 }

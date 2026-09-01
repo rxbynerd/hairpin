@@ -49,7 +49,9 @@ type SaveResult struct {
 
 // Client is the subset of Billet's MemoryService hairpin proxies.
 // Errors are returned unwrapped so callers can inspect them with
-// connect.CodeOf.
+// connect.CodeOf. Implementations must respect the context's deadline:
+// callers bound each call with CallTimeout, and a call that outlives it
+// holds a fulfilment goroutine open past the run it belongs to.
 type Client interface {
 	// Search returns memories matching query. A limit of zero or less
 	// leaves Billet's default in force.

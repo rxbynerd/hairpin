@@ -151,8 +151,10 @@ func serve(cfg *config.Config) error {
 		logger.Info("memory tools disabled; submits declaring them are rejected")
 	}
 
+	cp := controlplane.New(st, reg, cpOpts...)
+
 	mux := http.NewServeMux()
-	cpPath, cpHandler := controlplane.New(st, reg, cpOpts...).NewHTTPHandler()
+	cpPath, cpHandler := cp.NewHTTPHandler()
 	mux.Handle(cpPath, cpHandler)
 	// 4 MiB bounds a submit (RunConfigs are small; dynamic context is
 	// capped harness-side at 50 KiB per entry) without letting one
@@ -210,6 +212,7 @@ func serve(cfg *config.Config) error {
 		logger.Warn("shutdown grace expired with streams still open", "error", err)
 	}
 	svc.WaitForLaunches()
+	cp.WaitForMemoryCalls()
 	return nil
 }
 

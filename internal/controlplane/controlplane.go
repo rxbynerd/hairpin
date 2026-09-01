@@ -106,6 +106,8 @@ type Handler struct {
 	maxFinalTextByte  int
 	maxInFlightMemory int
 	maxMemoryCalls    int
+
+	memoryWait sync.WaitGroup
 }
 
 // Option configures a Handler.
@@ -149,6 +151,12 @@ func New(st store.Store, reg *registry.Registry, opts ...Option) *Handler {
 	}
 	return h
 }
+
+// WaitForMemoryCalls blocks until every in-flight memory call has
+// answered. The calls are detached from their stream's context, so
+// nothing else waits for them; shutdown does, to keep a late timeline
+// write from racing the store's close.
+func (h *Handler) WaitForMemoryCalls() { h.memoryWait.Wait() }
 
 // MaxEventBytes caps a single received HarnessEvent message at 4 MiB,
 // bounding memory used to decode a harness-controlled payload.
