@@ -93,6 +93,9 @@ fi
 log "waiting for rollouts..."
 kubectl -n hairpin rollout status deployment/redis --timeout=120s
 kubectl -n hairpin rollout status deployment/billet --timeout=120s
+# The provider reads server.py once at start, so a changed ConfigMap
+# only takes effect on a fresh Pod.
+kubectl -n hairpin rollout restart deployment/fake-provider
 kubectl -n hairpin rollout status deployment/fake-provider --timeout=120s
 kubectl -n hairpin rollout restart deployment/hairpin
 kubectl -n hairpin rollout status deployment/hairpin --timeout=120s
