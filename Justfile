@@ -38,6 +38,10 @@ deploy:
 smoke-test:
     ./scripts/dev/smoke-test.sh
 
+# Submit two jobs and assert the second recalls what the first saved.
+memory-smoke-test:
+    ./scripts/dev/memory-smoke-test.sh
+
 # Wire an OpenRouter key (from 1Password) and profile into the cluster.
 openrouter op_ref="":
     ./scripts/dev/openrouter.sh {{op_ref}}
