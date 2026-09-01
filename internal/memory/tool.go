@@ -75,12 +75,7 @@ func fulfilSearch(ctx context.Context, c Client, input []byte) (string, bool, er
 
 	out := searchOutput{Records: make([]recordOutput, 0, len(records))}
 	for _, r := range records {
-		out.Records = append(out.Records, recordOutput{
-			MemoryID:  r.MemoryID,
-			Content:   r.Content,
-			Score:     r.Score,
-			CreatedAt: r.CreatedAt,
-		})
+		out.Records = append(out.Records, recordOutput(r))
 	}
 	return encodeOutput(out)
 }
@@ -114,7 +109,7 @@ func fulfilSave(ctx context.Context, c Client, input []byte) (string, bool, erro
 	if err != nil {
 		return callFailure(err)
 	}
-	return encodeOutput(saveOutput{MemoryID: res.MemoryID, Accepted: res.Accepted})
+	return encodeOutput(saveOutput(res))
 }
 
 // decodeInput rejects anything that is not a JSON object shaped like
