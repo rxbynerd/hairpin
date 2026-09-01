@@ -24,6 +24,8 @@ spec:
       labels:
         app.kubernetes.io/name: billet
     spec:
+      # Billet never talks to the API server.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -59,11 +61,14 @@ spec:
             requests:
               cpu: 50m
               memory: 64Mi
+            limits:
+              memory: 256Mi
       volumes:
         # Memory lives and dies with the Pod. Replace with a
         # PersistentVolumeClaim for recall that survives a restart.
         - name: data
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 1Gi
 ---
 apiVersion: v1
 kind: Service
