@@ -19,6 +19,10 @@ func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
 		{name: "overflowing job TTL", flag: "-job-ttl=" + strconv.FormatInt(int64(math.MaxInt32)+1, 10), wantErr: "job TTL must be between"},
 		{name: "negative deadline slack", flag: "-deadline-slack=-1s", wantErr: "deadline slack must be non-negative"},
 		{name: "unknown sandbox runtime", flag: "-sandbox-runtime=runsc", wantErr: "unknown sandbox runtime"},
+		{name: "billet address without a port", flag: "-billet-addr=billet.hairpin.svc", wantErr: "billet address must be host:port"},
+		{name: "billet address without a host", flag: "-billet-addr=:8141", wantErr: "billet address must be host:port"},
+		{name: "billet address with a named port", flag: "-billet-addr=billet.hairpin.svc:rpc", wantErr: "port must be a number"},
+		{name: "billet address with an out-of-range port", flag: "-billet-addr=billet.hairpin.svc:70000", wantErr: "port must be a number"},
 	}
 
 	for _, tt := range tests {
@@ -28,5 +32,15 @@ func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
 				t.Fatalf("parseServeFlags error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParseServeFlagsAcceptsBilletAddr(t *testing.T) {
+	cfg, err := parseServeFlags([]string{"-launcher=none", "-advertise=hairpin.example:8130", "-billet-addr=billet.hairpin.svc:8141"})
+	if err != nil {
+		t.Fatalf("parseServeFlags: %v", err)
+	}
+	if cfg.BilletAddr != "billet.hairpin.svc:8141" {
+		t.Errorf("billet address = %q", cfg.BilletAddr)
 	}
 }

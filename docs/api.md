@@ -33,6 +33,13 @@ Request fields (`SubmitJobRequest`):
 | `profile` | Named RunConfig profile to resolve against. Empty selects the server's default profile. Mutually exclusive with `run_config_json`. |
 | `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form. Hairpin forces `run_id` to the job ID, applies a non-empty request `prompt`, and fills unset sandbox coordinates on `k8s`/`k8s-sandbox` executors from the server's `-sandbox-*` flags. See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
 
+Whichever source the RunConfig comes from, `SubmitJob` also rejects it
+with `invalid_argument` when `tools.controlPlane` names a tool other
+than `search_memory` or `save_memory`, names either while the server
+runs without `-billet-addr`, or sets a non-zero `timeoutSeconds` below
+hairpin's 10 second memory call timeout. See
+[`docs/memory.md`](memory.md#submit-time-checks).
+
 ```sh
 curl -s http://localhost:8130/hairpin.v1.JobService/SubmitJob \
   -H 'Content-Type: application/json' \
@@ -200,7 +207,7 @@ Every RPC maps internal errors onto connect codes (`internal/api/api.go`):
 | Condition | Code |
 |---|---|
 | Job, event, or permission request not found | `not_found` |
-| Malformed job ID or RunConfig, unknown profile, missing prompt, non-pending permission answer | `invalid_argument` |
+| Malformed job ID or RunConfig, unknown profile, missing prompt, unsupported control-plane tool declaration, non-pending permission answer | `invalid_argument` |
 | Operation needed a live harness stream and there was none | `failed_precondition` |
 | Anything else | `internal` |
 
@@ -244,7 +251,9 @@ hairpin synthesises itself:
 | `error` | harness | `message`. The normal failure path follows it with `done` carrying `stop_reason: "error"`; transport loss can still end the stream first. |
 | `done` | harness | `stop_reason`, and `trace` when the harness populated it. Always the last harness-originated event of a run. |
 | `sandbox_token_request` | harness | Recorded, then hairpin immediately answers with an explicit refusal — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
-| `batch_submission`, `tool_result_request` | harness | Recorded but not answered — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
+| `tool_result_request` | harness | `request_id`, `tool_use_id`, `tool_name`, base64-encoded `input`. A call to a control-plane tool. Hairpin answers `search_memory` and `save_memory` calls the run declared by proxying them to Billet, and refuses anything else — see [`docs/memory.md`](memory.md). |
+| `tool_result_response` | hairpin | `request_id`, `content`, `is_error`. The `ControlEvent` hairpin sent in answer to a `tool_result_request`, recorded whether or not delivery to the harness succeeded. |
+| `batch_submission` | harness | Recorded but not answered — see [Unsupported protocol capabilities](#unsupported-protocol-capabilities). |
 | `batch_waiting`, `batch_cancel_request` | harness | Recorded without batch-provider action; batch execution is unsupported. |
 | `status_change` | hairpin | Synthesised whenever hairpin moves a job between statuses. Payload: `{"status": "<job status>", "error": "<optional>"}`. This is what a watcher uses to detect job completion — see [WatchJob resume semantics](#watchjob-resume-semantics). |
 
@@ -317,12 +326,17 @@ implement these optional parts of the stirrup protocol:
 - Sandbox identity token issuance. A `sandbox_token_request` receives an
   explicit `is_error` refusal so the harness fails before creating a
   sandbox.
-- Batch execution and asynchronous tool results. Related events are
-  recorded, but Hairpin does not send the required provider result.
+- Batch execution. Related events are recorded, but Hairpin does not
+  send the required provider result.
+- Asynchronous tool results for any control-plane tool other than the
+  two memory tools. `SubmitJob` rejects a `tools.controlPlane` entry
+  with another name (see [SubmitJob](#submitjob)), and a
+  `tool_result_request` for an undeclared or unknown tool receives an
+  immediate `is_error` refusal.
 
-`SubmitJob` does not yet reject every RunConfig that enables these
-features. Do not enable them through Hairpin; fail-fast capability
-validation is tracked in
+`SubmitJob` does not yet reject a RunConfig that enables batch
+execution or follow-up turns. Do not enable them through Hairpin;
+fail-fast capability validation is tracked in
 [issue #1](https://github.com/rxbynerd/hairpin/issues/1). Deployment-wide
 limitations such as single-replica operation and missing API auth are
 listed in [`docs/design.md`](design.md#current-limitations).

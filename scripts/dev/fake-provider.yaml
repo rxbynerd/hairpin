@@ -2,10 +2,11 @@
 # just enough of the OpenAI chat-completions SSE protocol to drive a
 # stirrup run without a real API key or any egress from the cluster.
 #
-# It answers every request the same way: the first turn calls
-# run_command in the sandbox, and once a tool result comes back it
-# closes with a final message. That is the shortest path that actually
-# exercises pods/exec inside a sandbox Pod.
+# It drives the same four-turn run every time, picking each turn by how
+# many tool results the conversation already carries: search_memory,
+# save_memory, run_command in the sandbox, then a final message quoting
+# the search result back. One run therefore exercises both
+# control-plane memory tools and pods/exec inside a sandbox Pod.
 #
 # Development only. Point a profile's provider at
 # http://fake-provider.hairpin.svc:8080/v1.
@@ -29,25 +30,62 @@ data:
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
         }
 
-    def tool_call_turn():
-        args = json.dumps({"command": PROBE, "timeout": 30})
+    def tool_call_turn(call_id, name, arguments):
         return [
             chunk({"role": "assistant", "content": ""}),
             chunk({"tool_calls": [{
                 "index": 0,
-                "id": "call_probe",
+                "id": call_id,
                 "type": "function",
-                "function": {"name": "run_command", "arguments": args},
+                "function": {"name": name, "arguments": json.dumps(arguments)},
             }]}),
             chunk({}, "tool_calls"),
         ]
 
-    def final_turn():
+    def final_turn(text):
         return [
             chunk({"role": "assistant", "content": ""}),
-            chunk({"content": "Sandbox probe complete."}),
+            chunk({"content": text}),
             chunk({}, "stop"),
         ]
+
+    # Flattens a message's content, which may be a string or parts.
+    def text_of(content):
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                p.get("text", "") for p in content if isinstance(p, dict)
+            )
+        return ""
+
+    def tool_results(messages):
+        return [m for m in messages if m.get("role") == "tool"]
+
+    def prompt_of(messages):
+        for m in messages:
+            if m.get("role") == "user":
+                return text_of(m.get("content"))
+        return ""
+
+    def turn(messages):
+        results = tool_results(messages)
+        prompt = prompt_of(messages)
+        if not results:
+            return tool_call_turn(
+                "call_search", "search_memory", {"query": prompt})
+        if len(results) == 1:
+            return tool_call_turn(
+                "call_save", "save_memory",
+                {"content": "Learned: " + prompt, "kind": "fact"})
+        if len(results) == 2:
+            return tool_call_turn(
+                "call_probe", "run_command", {"command": PROBE, "timeout": 30})
+        # The first result is the search: quoting it makes what an
+        # earlier run saved observable in the job's final text.
+        return final_turn(
+            "Sandbox probe complete. Recalled: "
+            + text_of(results[0].get("content")))
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -59,9 +97,10 @@ data:
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             request = json.loads(body or b"{}")
             messages = request.get("messages", [])
-            saw_tool_result = any(m.get("role") == "tool" for m in messages)
-            chunks = final_turn() if saw_tool_result else tool_call_turn()
-            self.log_message("%d messages, tool result seen: %s", len(messages), saw_tool_result)
+            chunks = turn(messages)
+            self.log_message(
+                "%d messages, %d tool results",
+                len(messages), len(tool_results(messages)))
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -149,6 +188,34 @@ data:
       "executor": {
         "type": "k8s",
         "network": {"mode": "none"}
+      },
+      "tools": {
+        "controlPlane": [
+          {
+            "name": "search_memory",
+            "description": "Search knowledge saved by earlier sessions. Call this before starting work on a task.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Maximum records to return (default 5, max 100)."}
+              },
+              "required": ["query"]
+            }
+          },
+          {
+            "name": "save_memory",
+            "description": "Save a fact or outcome that a future session would benefit from knowing.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "content": {"type": "string"},
+                "kind": {"type": "string", "enum": ["event", "fact"]}
+              },
+              "required": ["content"]
+            }
+          }
+        ]
       },
       "permissionPolicy": {"type": "allow-all"},
       "maxTurns": 6,

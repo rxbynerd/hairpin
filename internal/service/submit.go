@@ -38,6 +38,9 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 	if err := validateRunConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateControlPlaneTools(cfg.GetTools().GetControlPlane(), s.memoryTools); err != nil {
+		return nil, err
+	}
 
 	runConfigJSON, err := protojson.Marshal(cfg)
 	if err != nil {

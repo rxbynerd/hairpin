@@ -50,6 +50,7 @@ type Service struct {
 	launcher         launcher.Launcher
 	profiles         *Profiles
 	executorDefaults config.ExecutorDefaults
+	memoryTools      bool
 	log              *slog.Logger
 
 	launchTimeout time.Duration
@@ -63,6 +64,13 @@ type Option func(*Service)
 // RunConfig's sandbox executor inherits when it names none of its own.
 func WithExecutorDefaults(d config.ExecutorDefaults) Option {
 	return func(s *Service) { s.executorDefaults = d }
+}
+
+// WithMemoryTools declares whether hairpin has a memory backend, and so
+// whether a submitted RunConfig may declare the memory tools. The
+// Service needs no client of its own: the control plane owns the calls.
+func WithMemoryTools(enabled bool) Option {
+	return func(s *Service) { s.memoryTools = enabled }
 }
 
 // New returns a Service. A nil logger discards output; a nil profiles

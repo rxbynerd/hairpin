@@ -7,6 +7,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/oklog/ulid/v2 v2.1.2
 	github.com/redis/go-redis/v9 v9.22.0
+	github.com/rxbynerd/billet v0.0.0-20260901115704-75106a9afa63
 	google.golang.org/protobuf v1.36.12
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0

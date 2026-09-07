@@ -1,0 +1,681 @@
+package controlplane
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"google.golang.org/protobuf/encoding/protojson"
+
+	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
+	"github.com/rxbynerd/hairpin/internal/job"
+	"github.com/rxbynerd/hairpin/internal/memory"
+	"github.com/rxbynerd/hairpin/internal/store"
+)
+
+// fakeMemory answers memory calls without a Billet. release, when set,
+// holds every call until the test closes it.
+type fakeMemory struct {
+	records   []memory.Record
+	result    memory.SaveResult
+	release   chan struct{}
+	panics    bool
+	searchErr error
+
+	mu      sync.Mutex
+	queries []string
+	saves   []string
+}
+
+func (f *fakeMemory) Search(_ context.Context, query string, _ int32) ([]memory.Record, error) {
+	f.mu.Lock()
+	f.queries = append(f.queries, query)
+	f.mu.Unlock()
+	f.wait()
+	if f.panics {
+		panic("billet client exploded")
+	}
+	return f.records, f.searchErr
+}
+
+func (f *fakeMemory) Save(_ context.Context, content string, _ memory.Kind) (memory.SaveResult, error) {
+	f.mu.Lock()
+	f.saves = append(f.saves, content)
+	f.mu.Unlock()
+	f.wait()
+	return f.result, nil
+}
+
+func (f *fakeMemory) wait() {
+	if f.release != nil {
+		<-f.release
+	}
+}
+
+func (f *fakeMemory) calls() (queries, saves []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.queries...), append([]string(nil), f.saves...)
+}
+
+// toolRunConfig is a runnable RunConfig declaring names as the run's
+// control-plane tools. Fulfilment consults this list, so a test that
+// wants a tool answered must declare it.
+func toolRunConfig(t *testing.T, names ...string) string {
+	t.Helper()
+	cfg := &harnessv1.RunConfig{RunId: "hp-test", Prompt: "do the thing", MaxTurns: 4}
+	for _, name := range names {
+		if cfg.Tools == nil {
+			cfg.Tools = &harnessv1.ToolsConfig{}
+		}
+		cfg.Tools.ControlPlane = append(cfg.Tools.ControlPlane,
+			&harnessv1.ControlPlaneToolConfig{Name: name, Description: "declared by the run"})
+	}
+	raw, err := protojson.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal run config: %v", err)
+	}
+	return string(raw)
+}
+
+func seedToolJob(t *testing.T, st store.Store, id string, names ...string) {
+	t.Helper()
+	seedJob(t, st, id, job.StatusAwaitingHarness, func(j *job.Job) {
+		j.RunConfigJSON = toolRunConfig(t, names...)
+	})
+}
+
+func toolRequest(requestID, tool, input string) *harnessv1.HarnessEvent {
+	return &harnessv1.HarnessEvent{
+		Type:      evToolResultRequest,
+		RequestId: requestID,
+		ToolUseId: "tu-" + requestID,
+		ToolName:  tool,
+		Input:     []byte(input),
+	}
+}
+
+func decodeControl(t *testing.T, payload string) *harnessv1.ControlEvent {
+	t.Helper()
+	var ev harnessv1.ControlEvent
+	if err := protojson.Unmarshal([]byte(payload), &ev); err != nil {
+		t.Fatalf("decode payload %q: %v", payload, err)
+	}
+	return &ev
+}
+
+// waitFor polls until cond holds, covering the window in which a memory
+// call is still in flight on its own goroutine.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func toolResponses(s *fakeStream) []*harnessv1.ControlEvent {
+	var out []*harnessv1.ControlEvent
+	for _, ev := range s.controls() {
+		if ev.GetType() == ctlToolResultResponse {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestRunTaskFulfilsMemoryTools(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{
+		records: []memory.Record{{MemoryID: "m-1", Content: "hairpin proxies memory", Score: 0.5, CreatedAt: "2026-09-01T10:00:00Z"}},
+		result:  memory.SaveResult{MemoryID: "m-2", Accepted: true},
+	}
+	h.memory = mem
+	seedToolJob(t, st, "hp-mem", memory.ToolSearch, memory.ToolSave)
+
+	s := newFakeStream(
+		ready("hp-mem"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"proxy","limit":2}`),
+		toolRequest("t-2", memory.ToolSave, `{"content":"a fact","kind":"fact"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	// The harness blocks on an async tool result before finishing its
+	// turn, so done waits for both answers here too.
+	s.onReceive = func(n int) {
+		if n == 3 {
+			waitFor(t, "both tool results", func() bool { return len(toolResponses(s)) == 2 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	queries, saves := mem.calls()
+	if len(queries) != 1 || queries[0] != "proxy" {
+		t.Errorf("searches = %v, want [proxy]", queries)
+	}
+	if len(saves) != 1 || saves[0] != "a fact" {
+		t.Errorf("saves = %v, want [a fact]", saves)
+	}
+
+	want := map[string]string{
+		"t-1": `{"records":[{"memory_id":"m-1","content":"hairpin proxies memory","score":0.5,"created_at":"2026-09-01T10:00:00Z"}]}`,
+		"t-2": `{"memory_id":"m-2","accepted":true}`,
+	}
+	for _, resp := range toolResponses(s) {
+		if resp.GetIsError().GetValue() {
+			t.Errorf("request %q answered with an error: %s", resp.GetRequestId(), resp.GetContent())
+		}
+		if got := resp.GetContent(); got != want[resp.GetRequestId()] {
+			t.Errorf("request %q content = %s, want %s", resp.GetRequestId(), got, want[resp.GetRequestId()])
+		}
+	}
+
+	waitFor(t, "both responses on the timeline", func() bool {
+		return len(eventsOfType(t, st, "hp-mem", ctlToolResultResponse)) == 2
+	})
+	if got := len(eventsOfType(t, st, "hp-mem", evToolResultRequest)); got != 2 {
+		t.Errorf("recorded %d tool_result_request events, want 2", got)
+	}
+	recorded := decodeControl(t, eventsOfType(t, st, "hp-mem", ctlToolResultResponse)[0].PayloadJSON)
+	if recorded.GetRequestId() == "" || recorded.GetContent() == "" {
+		t.Errorf("recorded response lost its payload: %+v", recorded)
+	}
+}
+
+func TestRunTaskRefusesUnknownControlPlaneTool(t *testing.T) {
+	h, st, _ := testHandler(t)
+	h.memory = &fakeMemory{}
+	seedToolJob(t, st, "hp-unk", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-unk"),
+		toolRequest("t-1", "ask_the_operator", `{}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	resps := toolResponses(s)
+	if len(resps) != 1 {
+		t.Fatalf("controls = %v, want a refusal", s.types())
+	}
+	if !resps[0].GetIsError().GetValue() {
+		t.Error("refusal not marked as an error")
+	}
+	if got := resps[0].GetContent(); got != memory.UnsupportedToolMessage("ask_the_operator") {
+		t.Errorf("content = %q", got)
+	}
+	if got := len(eventsOfType(t, st, "hp-unk", ctlToolResultResponse)); got != 1 {
+		t.Errorf("recorded %d responses, want 1", got)
+	}
+}
+
+func TestRunTaskRefusesMemoryToolWhenDisabled(t *testing.T) {
+	h, st, _ := testHandler(t)
+	seedToolJob(t, st, "hp-off", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-off"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"anything"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	resps := toolResponses(s)
+	if len(resps) != 1 {
+		t.Fatalf("controls = %v, want a refusal", s.types())
+	}
+	if !resps[0].GetIsError().GetValue() {
+		t.Error("refusal not marked as an error")
+	}
+	if got := resps[0].GetContent(); got != memoryDisabledRefusal {
+		t.Errorf("content = %q, want %q", got, memoryDisabledRefusal)
+	}
+}
+
+func TestRunTaskKeepsPumpingWhileMemoryCallIsInFlight(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{release: make(chan struct{})}
+	h.memory = mem
+	seedToolJob(t, st, "hp-slow", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-slow"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"slow"}`),
+		&harnessv1.HarnessEvent{Type: evHeartbeat},
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n != 3 { // the heartbeat has been handled; the search has not returned
+			return
+		}
+		if len(eventsOfType(t, st, "hp-slow", evHeartbeat)) != 1 {
+			t.Error("the heartbeat was not recorded while the memory call was in flight")
+		}
+		if len(toolResponses(s)) != 0 {
+			t.Error("a tool result was sent before the memory call returned")
+		}
+		close(mem.release)
+		waitFor(t, "the released tool result", func() bool { return len(toolResponses(s)) == 1 })
+	}
+
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if got := toolResponses(s); len(got) != 1 || got[0].GetRequestId() != "t-1" {
+		t.Fatalf("controls = %v, want one answer to t-1", s.types())
+	}
+}
+
+func eventsOfType(t *testing.T, st store.Store, jobID, evType string) []store.Event {
+	t.Helper()
+	var out []store.Event
+	for _, ev := range events(t, st, jobID) {
+		if ev.Type == evType {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func TestSendToolResultRecordedWhenSendFails(t *testing.T) {
+	h, st, _ := testHandler(t)
+	seedJob(t, st, "hp-gone", job.StatusAwaitingHarness, nil)
+
+	s := newFakeStream()
+	s.failSends(errors.New("stream closed"))
+	p := h.pump(context.Background(), "hp-gone", &session{s: s}, nil)
+
+	p.sendToolResult("t-1", `{"records":[]}`, false)
+
+	recorded := eventsOfType(t, st, "hp-gone", ctlToolResultResponse)
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %d responses, want the answer kept despite the failed send", len(recorded))
+	}
+	if got := decodeControl(t, recorded[0].PayloadJSON).GetRequestId(); got != "t-1" {
+		t.Errorf("recorded request_id = %q, want t-1", got)
+	}
+	if len(toolResponses(s)) != 0 {
+		t.Error("a failed send was recorded as delivered")
+	}
+}
+
+func TestRunTaskRefusesToolNotDeclaredByJob(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{}
+	h.memory = mem
+	seedToolJob(t, st, "hp-undecl", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-undecl"),
+		toolRequest("t-1", memory.ToolSave, `{"content":"a fact"}`),
+		toolRequest("t-2", memory.ToolSearch, `{"query":"declared"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n == 3 {
+			waitFor(t, "both answers", func() bool { return len(toolResponses(s)) == 2 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	answers := map[string]*harnessv1.ControlEvent{}
+	for _, resp := range toolResponses(s) {
+		answers[resp.GetRequestId()] = resp
+	}
+	undeclared := answers["t-1"]
+	if undeclared == nil || !undeclared.GetIsError().GetValue() {
+		t.Fatalf("undeclared tool was not refused: %v", undeclared)
+	}
+	if got := undeclared.GetContent(); got != memory.UnsupportedToolMessage(memory.ToolSave) {
+		t.Errorf("refusal = %q, want the same wording as an unknown tool", got)
+	}
+	if _, saves := mem.calls(); len(saves) != 0 {
+		t.Errorf("an undeclared tool reached Billet: %v", saves)
+	}
+	if declared := answers["t-2"]; declared == nil || declared.GetIsError().GetValue() {
+		t.Errorf("the declared tool was not answered: %v", declared)
+	}
+}
+
+func TestRunTaskRefusesMemoryCallsBeyondInFlightLimit(t *testing.T) {
+	h, st, _ := testHandler(t)
+	h.maxInFlightMemory = 1
+	mem := &fakeMemory{release: make(chan struct{})}
+	h.memory = mem
+	seedToolJob(t, st, "hp-busy", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-busy"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"first"}`),
+		toolRequest("t-2", memory.ToolSearch, `{"query":"second"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n != 3 {
+			return
+		}
+		// The first call still holds the only slot, so the second must
+		// already have been refused rather than queued behind it.
+		resps := toolResponses(s)
+		if len(resps) != 1 {
+			t.Fatalf("responses = %d, want only the refusal while the slot is held", len(resps))
+		}
+		if got := resps[0].GetRequestId(); got != "t-2" {
+			t.Errorf("refused request = %q, want t-2", got)
+		}
+		if got := resps[0].GetContent(); got != memoryBusyRefusal {
+			t.Errorf("refusal = %q, want %q", got, memoryBusyRefusal)
+		}
+		close(mem.release)
+		waitFor(t, "the held call", func() bool { return len(toolResponses(s)) == 2 })
+	}
+
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	for _, resp := range toolResponses(s) {
+		if resp.GetRequestId() == "t-1" && resp.GetIsError().GetValue() {
+			t.Errorf("the admitted call was answered with an error: %s", resp.GetContent())
+		}
+	}
+	if queries, _ := mem.calls(); len(queries) != 1 {
+		t.Errorf("Billet saw %v, want only the admitted call", queries)
+	}
+}
+
+func TestRunTaskRefusesMemoryCallsBeyondLifetimeLimit(t *testing.T) {
+	h, st, _ := testHandler(t)
+	h.maxMemoryCalls = 1
+	mem := &fakeMemory{}
+	h.memory = mem
+	seedToolJob(t, st, "hp-cap", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-cap"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"first"}`),
+		toolRequest("t-2", memory.ToolSearch, `{"query":"second"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n == 3 {
+			waitFor(t, "both answers", func() bool { return len(toolResponses(s)) == 2 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	for _, resp := range toolResponses(s) {
+		if resp.GetRequestId() != "t-2" {
+			continue
+		}
+		if !resp.GetIsError().GetValue() || resp.GetContent() != memoryCallLimitRefusal {
+			t.Errorf("second call = %q (is_error %v), want the limit refusal",
+				resp.GetContent(), resp.GetIsError().GetValue())
+		}
+	}
+	if queries, _ := mem.calls(); len(queries) != 1 {
+		t.Errorf("Billet saw %v, want only the first call", queries)
+	}
+}
+
+func TestRunTaskRefusesRepeatedRequestID(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{}
+	h.memory = mem
+	seedToolJob(t, st, "hp-dupreq", memory.ToolSave)
+
+	s := newFakeStream(
+		ready("hp-dupreq"),
+		toolRequest("t-1", memory.ToolSave, `{"content":"a fact"}`),
+		toolRequest("t-1", memory.ToolSave, `{"content":"a fact"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n == 3 {
+			waitFor(t, "both answers", func() bool { return len(toolResponses(s)) == 2 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	var refusals int
+	for _, resp := range toolResponses(s) {
+		if resp.GetContent() == duplicateRequestRefusal && resp.GetIsError().GetValue() {
+			refusals++
+		}
+	}
+	if refusals != 1 {
+		t.Errorf("duplicate refusals = %d, want exactly one", refusals)
+	}
+	if _, saves := mem.calls(); len(saves) != 1 {
+		t.Errorf("Billet saw %d saves, want one — a retried request id must not save twice", len(saves))
+	}
+}
+
+func TestRunTaskIgnoresOversizedRequestID(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{}
+	h.memory = mem
+	seedToolJob(t, st, "hp-bigid", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-bigid"),
+		toolRequest(strings.Repeat("x", maxRequestIDBytes+1), memory.ToolSearch, `{"query":"x"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	if got := toolResponses(s); len(got) != 0 {
+		t.Errorf("responses = %v, want none: the id cannot be echoed back", got)
+	}
+	if queries, _ := mem.calls(); len(queries) != 0 {
+		t.Errorf("an unanswerable request reached Billet: %v", queries)
+	}
+}
+
+func TestRunTaskRecoversFromMemoryPanic(t *testing.T) {
+	h, st, _ := testHandler(t)
+	h.memory = &fakeMemory{panics: true}
+	seedToolJob(t, st, "hp-panic", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-panic"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"boom"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n == 2 {
+			waitFor(t, "the recovered answer", func() bool { return len(toolResponses(s)) == 1 })
+		}
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	h.WaitForMemoryCalls()
+
+	resps := toolResponses(s)
+	if len(resps) != 1 {
+		t.Fatalf("responses = %v, want the panic answered", s.types())
+	}
+	if !resps[0].GetIsError().GetValue() || resps[0].GetContent() != memory.GenericFailureMessage {
+		t.Errorf("content = %q (is_error %v), want the generic failure",
+			resps[0].GetContent(), resps[0].GetIsError().GetValue())
+	}
+	if j := getJob(t, st, "hp-panic"); j.Status != job.StatusSucceeded {
+		t.Errorf("status = %q, want the run to have settled normally", j.Status)
+	}
+	if got := len(eventsOfType(t, st, "hp-panic", ctlToolResultResponse)); got != 1 {
+		t.Errorf("recorded %d responses, want 1", got)
+	}
+}
+
+func TestRunTaskStreamClosesWhileMemoryCallInFlight(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &fakeMemory{release: make(chan struct{})}
+	h.memory = mem
+	seedToolJob(t, st, "hp-hangup", memory.ToolSearch)
+
+	// No done event: the stream ends under the call, as a crashed or
+	// evicted harness would leave it.
+	s := newFakeStream(
+		ready("hp-hangup"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"orphan"}`),
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	if j := getJob(t, st, "hp-hangup"); j.Status != job.StatusFailed {
+		t.Errorf("status = %q, want failed: the stream closed without done", j.Status)
+	}
+	if len(eventsOfType(t, st, "hp-hangup", ctlToolResultResponse)) != 0 {
+		t.Error("the call answered before it was released")
+	}
+
+	close(mem.release)
+	h.WaitForMemoryCalls()
+
+	// The session is closed, so the answer cannot be delivered, but it
+	// is still auditable — and the wait guarantees the write landed
+	// before a shutdown would close the store.
+	recorded := eventsOfType(t, st, "hp-hangup", ctlToolResultResponse)
+	if len(recorded) != 1 {
+		t.Fatalf("recorded %d responses, want the late answer kept", len(recorded))
+	}
+	if got := decodeControl(t, recorded[0].PayloadJSON).GetRequestId(); got != "t-1" {
+		t.Errorf("recorded request_id = %q, want t-1", got)
+	}
+	if len(toolResponses(s)) != 0 {
+		t.Error("an answer was delivered after the session closed")
+	}
+}
+
+func TestRunTaskAppliesBilletErrorPolicy(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"caller error passed through": {
+			err:  connect.NewError(connect.CodeInvalidArgument, errors.New("search_memory: query must not be empty")),
+			want: "search_memory: query must not be empty",
+		},
+		"budget exhaustion passed through": {
+			err:  connect.NewError(connect.CodeResourceExhausted, errors.New("budget exceeded")),
+			want: "budget exceeded",
+		},
+		"internal failure withheld": {
+			err:  connect.NewError(connect.CodeUnavailable, errors.New("billet.hairpin.svc:8141: connection refused")),
+			want: memory.GenericFailureMessage,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h, st, _ := testHandler(t)
+			h.memory = &fakeMemory{searchErr: tc.err}
+			seedToolJob(t, st, "hp-err", memory.ToolSearch)
+
+			s := newFakeStream(
+				ready("hp-err"),
+				toolRequest("t-1", memory.ToolSearch, `{"query":"x"}`),
+				&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+			)
+			s.onReceive = func(n int) {
+				if n == 2 {
+					waitFor(t, "the answer", func() bool { return len(toolResponses(s)) == 1 })
+				}
+			}
+			if err := h.runTask(context.Background(), s); err != nil {
+				t.Fatalf("runTask: %v", err)
+			}
+
+			resps := toolResponses(s)
+			if len(resps) != 1 {
+				t.Fatalf("responses = %v, want one", s.types())
+			}
+			if !resps[0].GetIsError().GetValue() {
+				t.Error("a failed call was answered as a success")
+			}
+			if got := resps[0].GetContent(); got != tc.want {
+				t.Errorf("content = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// echoMemory answers each search with the query itself, holding it until
+// that query's gate is closed, so a test can control completion order.
+type echoMemory struct {
+	gates map[string]chan struct{}
+}
+
+func (e *echoMemory) Search(_ context.Context, query string, _ int32) ([]memory.Record, error) {
+	if gate, ok := e.gates[query]; ok {
+		<-gate
+	}
+	return []memory.Record{{MemoryID: query, Content: query}}, nil
+}
+
+func (e *echoMemory) Save(context.Context, string, memory.Kind) (memory.SaveResult, error) {
+	return memory.SaveResult{}, nil
+}
+
+func TestRunTaskPairsConcurrentAnswersWithTheirRequests(t *testing.T) {
+	h, st, _ := testHandler(t)
+	mem := &echoMemory{gates: map[string]chan struct{}{
+		"first":  make(chan struct{}),
+		"second": make(chan struct{}),
+	}}
+	h.memory = mem
+	seedToolJob(t, st, "hp-order", memory.ToolSearch)
+
+	s := newFakeStream(
+		ready("hp-order"),
+		toolRequest("t-1", memory.ToolSearch, `{"query":"first"}`),
+		toolRequest("t-2", memory.ToolSearch, `{"query":"second"}`),
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	s.onReceive = func(n int) {
+		if n != 3 {
+			return
+		}
+		// Answer in the reverse of the request order.
+		close(mem.gates["second"])
+		waitFor(t, "the second answer", func() bool { return len(toolResponses(s)) == 1 })
+		close(mem.gates["first"])
+		waitFor(t, "the first answer", func() bool { return len(toolResponses(s)) == 2 })
+	}
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	resps := toolResponses(s)
+	if got := resps[0].GetRequestId(); got != "t-2" {
+		t.Errorf("first answer was for %q, want the request released first", got)
+	}
+	want := map[string]string{"t-1": "first", "t-2": "second"}
+	for _, resp := range resps {
+		if !strings.Contains(resp.GetContent(), want[resp.GetRequestId()]) {
+			t.Errorf("request %q answered with %s, want the %q records",
+				resp.GetRequestId(), resp.GetContent(), want[resp.GetRequestId()])
+		}
+	}
+}

@@ -26,8 +26,9 @@ point wiring all three together.
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `create` verb its Job launcher uses. |
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity, its sandbox-namespace Role, and the token-less `stirrup-sandbox` identity the sandbox Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise — see [Redis](#redis). |
+| `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils, on a per-Pod `emptyDir`. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only — see [Billet](#billet). |
 | `profiles.yaml` | ConfigMap | The RunConfig profile templates mounted at `--profiles`. |
-| `hairpin.yaml` | Deployment + Service | hairpin itself, wired to the identities, Redis, and profiles above. |
+| `hairpin.yaml` | Deployment + Service | hairpin itself, wired to the identities, Redis, Billet, and profiles above. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `-harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
 | `kustomization.yaml` | Kustomization | Applies the complete reference deployment with namespace resources ordered first. |
 
@@ -36,10 +37,24 @@ point wiring all three together.
 - `hairpin.yaml`: `containers[0].image` — build and push a hairpin
   image, then point this at it. The stirrup images are already
   defaulted to their published tags; override with `-harness-image` and
-  `-sandbox-image` to pin a digest or use a mirror.
-- `profiles.yaml`: the shipped `default` profile names a model and an
-  `ask-upstream` permission policy. Adjust it, or add profiles, for
-  what your callers actually submit.
+  `-sandbox-image` to pin a digest or use a mirror. The memory tools
+  need a harness built from
+  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586)
+  until it merges.
+- `billet.yaml`: `containers[0].image` names
+  `ghcr.io/rxbynerd/billet:latest`, which is not published until
+  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) merges;
+  point it at a Billet image built from that branch. Replace the
+  `emptyDir` with a PersistentVolumeClaim for memory that outlives the
+  Pod.
+- `profiles.yaml`: the shipped `default` profile names a model, an
+  `ask-upstream` permission policy, and the two memory tools. Adjust
+  it, or add profiles, for what your callers actually submit. A
+  profile that omits the memory tools is opted out of them. To run
+  without memory altogether, remove `tools.controlPlane` from every
+  profile, drop `--billet-addr` from `hairpin.yaml`, and drop
+  `billet.yaml` from the Kustomization; hairpin rejects a profile that
+  declares the tools when it has no `--billet-addr`.
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
   other provider keys your RunConfig profiles reference.
 
@@ -62,25 +77,63 @@ Submitting a job once the `hairpin` Service is up: port-forward or
 call `JobService/SubmitJob` from another Pod in the cluster (see
 [`docs/api.md`](api.md)).
 
+### Billet
+
+`billet.yaml` runs Billet with only its RPC listener enabled, and
+`hairpin.yaml` passes `--billet-addr=billet.hairpin.svc:8141`, so a
+profile that declares the memory tools can use them as soon as both
+Pods are up. Harness Jobs share the `hairpin` namespace but carry the
+`stirrup` label, which the NetworkPolicy's ingress selector excludes;
+that policy is the only access control on Billet's port, and it holds
+only on a CNI that enforces NetworkPolicy. Remember that reaching
+hairpin's API is equivalent to reaching Billet, since a caller can
+submit a RunConfig that declares the tools. The tool contracts, the
+limits hairpin applies, and the trust posture of a namespace shared by
+every run are in [`docs/memory.md`](memory.md).
+
 ### The development cluster
 
 [`scripts/dev/`](../scripts/dev/) brings up a single-node kind cluster
 on podman and exercises the full chain against it:
 
 ```sh
-just kind-up      # scripts/dev/kind-up.sh
-just deploy       # build, load into the node, apply examples/k8s + a fake provider
-just smoke-test   # submit one job, assert it completed in a sandbox Pod
+just kind-up             # scripts/dev/kind-up.sh
+just deploy              # build, load into the node, apply examples/k8s + a fake provider
+just smoke-test          # submit one job, assert it completed in a sandbox Pod
+just memory-smoke-test   # submit two jobs, assert the second recalls what the first saved
 just kind-down
 ```
 
 `deploy.sh` overrides the reference Deployment's image with a locally
 built `localhost/hairpin:dev` and installs
 `scripts/dev/fake-provider.yaml` — a stand-in that speaks just enough
-of the OpenAI chat-completions SSE protocol to drive one `run_command`
-call and then finish, so a run completes with no API key and no egress
-from the cluster. It also replaces the `hairpin-profiles` ConfigMap so
-the default profile points at it. Development only.
+of the OpenAI chat-completions SSE protocol to drive a fixed four-turn
+run (`search_memory`, `save_memory`, one `run_command`, then a final
+message quoting the search result) so a run completes with no API key
+and no egress from the cluster. It also replaces the `hairpin-profiles`
+ConfigMap so the default profile points at it, and restarts the
+provider so a changed ConfigMap takes effect. Development only.
+
+Billet gets the same treatment when `${BILLET_DIR}/Containerfile`
+exists (`BILLET_DIR` defaults to `../billet`, a sibling checkout):
+`deploy.sh` builds `localhost/billet:dev`, loads it into the node, and
+pins the Billet Deployment to it. Without a checkout the manifest is
+applied unchanged, and because `ghcr.io/rxbynerd/billet:latest` is not
+yet published, `deploy.sh` fails waiting on the Billet rollout. The
+published harness image likewise predates the control-plane tool
+surface: patch `--harness-image` onto the hairpin Deployment with a
+harness built from stirrup PR #586 after each `just deploy`, which
+re-applies `hairpin.yaml`.
+
+`memory-smoke-test.sh` submits two jobs and asserts the second job's
+final text quotes what the first saved, then queries Billet directly
+through a second port-forward so a record Billet never received can be
+told apart from one hairpin did not read back. `deploy.sh` and both
+smoke tests pin their `kubectl` context to `HAIRPIN_KUBE_CONTEXT`
+(default `kind-<cluster>`, where the cluster name is
+`HAIRPIN_CLUSTER_NAME`, default `hairpin`) rather than inheriting
+whatever the shell last selected, because the manifests replace
+cluster state by name.
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an

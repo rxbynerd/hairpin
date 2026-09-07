@@ -14,8 +14,16 @@ is tracked in GitHub rather than as a session log:
 
 - [Reject unsupported RunConfig capabilities during submission](https://github.com/rxbynerd/hairpin/issues/1) instead of allowing a job to reach a protocol request Hairpin cannot answer.
 - Add sandbox identity token issuance, including audience validation, key rotation/JWKS publication, short-lived per-run claims, and policy-scoped identities.
-- Add follow-up turns, batch execution, and asynchronous tool-result handling only with end-to-end lifecycle and cancellation semantics.
+- Add follow-up turns and batch execution only with end-to-end lifecycle and cancellation semantics. Asynchronous tool results are answered for the two memory tools only.
 - [Reconcile permission state after harness-side timeouts](https://github.com/rxbynerd/hairpin/issues/2) so a late API response cannot appear effective after the harness has moved on.
+
+## Shared memory
+
+Memory ([`docs/memory.md`](docs/memory.md)) depends on two upstream changes that are not yet merged: [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) for the `tools.controlPlane` RunConfig surface and [billet PR #1](https://github.com/rxbynerd/billet/pull/1) for a published Billet image. Re-vendor the harness proto from stirrup main once the first merges.
+
+- Recall and save memory without the model's cooperation: search at task start and save an outcome at `done`, rather than relying on the tool descriptions steering the model to call them.
+- Partition memory per profile or per caller instead of one Billet namespace per deployment, once Billet's contract allows a caller-supplied namespace.
+- Authenticate hairpin to Billet, so the NetworkPolicy is not the only access control on the memory store.
 
 ## Security and observability
 

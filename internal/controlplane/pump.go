@@ -12,6 +12,7 @@ import (
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/job"
+	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/store"
 )
 
@@ -34,9 +35,17 @@ type eventPump struct {
 	lastEventFlush time.Time
 
 	permissionsSeen int
+
+	// Memory admission state, all owned by the pump goroutine. The
+	// semaphore is the one piece the fulfilment goroutines touch, and
+	// only to release their slot.
+	declaredTools  map[string]struct{}
+	memoryInFlight chan struct{}
+	memoryRequests map[string]struct{}
+	memoryCalls    int
 }
 
-func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventPump {
+func (h *Handler) pump(ctx context.Context, jobID string, sess *session, declaredTools map[string]struct{}) *eventPump {
 	now := h.now()
 	return &eventPump{
 		h: h,
@@ -48,6 +57,9 @@ func (h *Handler) pump(ctx context.Context, jobID string, sess *session) *eventP
 		sess:           sess,
 		lastEventAt:    now,
 		lastEventFlush: now,
+		declaredTools:  declaredTools,
+		memoryInFlight: make(chan struct{}, h.maxInFlightMemory),
+		memoryRequests: make(map[string]struct{}),
 	}
 }
 
@@ -125,7 +137,11 @@ func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 		p.appendProto(ev, now)
 		p.refuseSandboxToken(ev)
 
-	case evBatchSubmission, evToolResultRequest:
+	case evToolResultRequest:
+		p.appendProto(ev, now)
+		p.fulfilToolResult(ev)
+
+	case evBatchSubmission:
 		p.h.log.Warn("unsupported harness request ignored",
 			"job_id", p.jobID, "type", ev.GetType(), "request_id", ev.GetRequestId())
 		p.appendProto(ev, now)
@@ -219,6 +235,110 @@ func (p *eventPump) refuseSandboxToken(ev *harnessv1.HarnessEvent) {
 		p.h.log.Error("failed to refuse sandbox token request",
 			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
 	}
+}
+
+// fulfilToolResult answers a control-plane tool call. An admitted memory
+// tool is proxied to Billet on its own goroutine so a slow backend
+// cannot stall the event pump: the harness keeps streaming deltas and
+// heartbeats while the call is in flight, and the response is sent
+// whenever it arrives. Every other request is refused inline.
+func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
+	tool := ev.GetToolName()
+	requestID := ev.GetRequestId()
+
+	// A correlation id this long cannot be echoed back safely, and the
+	// harness has no use for an answer it cannot match.
+	if len(requestID) > maxRequestIDBytes {
+		p.h.log.Warn("ignoring tool_result_request with an oversized request id",
+			"job_id", p.jobID, "tool", tool, "request_id_bytes", len(requestID))
+		return
+	}
+	if refusal, ok := p.admitMemoryCall(tool, requestID); !ok {
+		p.sendToolResult(requestID, refusal, true)
+		return
+	}
+
+	input := append([]byte(nil), ev.GetInput()...)
+	p.h.memoryWait.Add(1)
+	go func() {
+		defer p.h.memoryWait.Done()
+		defer func() { <-p.memoryInFlight }()
+		// This goroutine is detached from the request handler, so an
+		// unrecovered panic here would take the process down and leave
+		// every live run without a terminal record.
+		defer func() {
+			if r := recover(); r != nil {
+				p.h.log.Error("memory tool call panicked",
+					"job_id", p.jobID, "tool", tool, "request_id", requestID, "panic", r)
+				p.sendToolResult(requestID, memory.GenericFailureMessage, true)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(p.ctx, memory.CallTimeout)
+		defer cancel()
+		content, isError, detail := memory.Fulfil(ctx, p.h.memory, tool, input)
+		if detail != nil {
+			p.h.log.Error("memory tool call failed",
+				"job_id", p.jobID, "tool", tool, "request_id", requestID, "error", detail)
+		}
+		p.sendToolResult(requestID, content, isError)
+	}()
+}
+
+// admitMemoryCall decides whether one request may reach Billet, taking
+// an in-flight slot when it may. It reports the refusal to send back
+// otherwise. Undeclared and unknown tools share a refusal so the answer
+// carries no information about the run's configuration.
+func (p *eventPump) admitMemoryCall(tool, requestID string) (string, bool) {
+	if _, declared := p.declaredTools[tool]; !declared || !memory.IsMemoryTool(tool) {
+		return memory.UnsupportedToolMessage(tool), false
+	}
+	if p.h.memory == nil {
+		return memoryDisabledRefusal, false
+	}
+	if _, seen := p.memoryRequests[requestID]; seen {
+		return duplicateRequestRefusal, false
+	}
+	if p.memoryCalls >= p.h.maxMemoryCalls {
+		return memoryCallLimitRefusal, false
+	}
+	select {
+	case p.memoryInFlight <- struct{}{}:
+	default:
+		return memoryBusyRefusal, false
+	}
+	p.memoryCalls++
+	p.memoryRequests[requestID] = struct{}{}
+	return "", true
+}
+
+// sendToolResult answers one tool_result_request and records the answer
+// on the timeline. The record is written whether or not the send lands:
+// an answer that resolves after the harness hung up is exactly what an
+// operator needs to see, and for save_memory it is the only trace that
+// a memory was written.
+func (p *eventPump) sendToolResult(requestID, content string, isError bool) {
+	resp := &harnessv1.ControlEvent{
+		Type:      ctlToolResultResponse,
+		RequestId: requestID,
+		Content:   content,
+		IsError:   &harnessv1.OptionalBool{Value: isError},
+	}
+	if err := p.sess.Send(resp); err != nil {
+		p.h.log.Warn("failed to send tool result",
+			"job_id", p.jobID, "request_id", requestID, "error", err)
+	}
+	p.appendControl(resp, p.h.now())
+}
+
+func (p *eventPump) appendControl(ev *harnessv1.ControlEvent, at time.Time) {
+	payload, err := protojson.Marshal(ev)
+	if err != nil {
+		p.h.log.Error("failed to encode control event",
+			"job_id", p.jobID, "type", ev.GetType(), "error", err)
+		return
+	}
+	p.append(store.Event{Type: ev.GetType(), PayloadJSON: string(payload), At: at})
 }
 
 // maybeFlushLastEventAt persists the liveness timestamp at a bounded

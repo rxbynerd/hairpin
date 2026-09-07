@@ -1,0 +1,103 @@
+# Billet, the memory store behind hairpin's search_memory and
+# save_memory tools (see docs/memory.md).
+#
+# Only the Connect RPC listener is enabled; the harness never reaches
+# Billet, hairpin proxies every call. That endpoint authenticates
+# nobody, so the NetworkPolicy below is the access control — anything
+# able to reach port 8141 can read and write the shared memory.
+# Harness Jobs share this namespace but are labelled `stirrup`, so the
+# ingress selector excludes them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billet
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: billet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: billet
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: billet
+    spec:
+      # Billet never talks to the API server.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: billet
+          image: ghcr.io/rxbynerd/billet:latest
+          args:
+            - serve
+            - --rpc
+            - --mcp=false
+            - --rpc-listen=:8141
+            - --backend=bolt
+            - --db-path=/var/lib/billet/billet.db
+            - --namespace=hairpin
+          ports:
+            - containerPort: 8141
+              name: grpc
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/billet
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The RPC listener serves Connect only; a socket accept is the
+          # strongest readiness signal available.
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        # Memory lives and dies with the Pod. Replace with a
+        # PersistentVolumeClaim for recall that survives a restart.
+        - name: data
+          emptyDir:
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: billet
+  namespace: hairpin
+spec:
+  selector:
+    app.kubernetes.io/name: billet
+  ports:
+    - port: 8141
+      targetPort: grpc
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: billet
+  namespace: hairpin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: billet
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hairpin
+      ports:
+        - protocol: TCP
+          port: 8141

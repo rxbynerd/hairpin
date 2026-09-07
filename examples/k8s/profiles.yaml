@@ -6,6 +6,10 @@
 # profile names the isolation it wants, and hairpin fills in the sandbox
 # image, namespace, ServiceAccount, and RuntimeClassName from its
 # --sandbox-* flags at submit time.
+#
+# The default profile declares the two Billet-backed memory tools
+# (docs/memory.md); hairpin refuses the profile at submit unless it was
+# started with --billet-addr, as the reference hairpin.yaml does.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -28,6 +32,34 @@ data:
         "network": {"mode": "none"}
       },
       "permissionPolicy": {"type": "ask-upstream", "timeout": 120},
+      "tools": {
+        "controlPlane": [
+          {
+            "name": "search_memory",
+            "description": "Search knowledge saved by earlier sessions. Call this before starting work on a task.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Maximum records to return (default 5, max 100)."}
+              },
+              "required": ["query"]
+            }
+          },
+          {
+            "name": "save_memory",
+            "description": "Save a fact or outcome that a future session would benefit from knowing.",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "content": {"type": "string"},
+                "kind": {"type": "string", "enum": ["event", "fact"]}
+              },
+              "required": ["content"]
+            }
+          }
+        ]
+      },
       "maxTurns": 20,
       "timeout": 900
     }

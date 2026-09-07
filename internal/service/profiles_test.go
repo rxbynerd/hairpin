@@ -96,3 +96,62 @@ func TestProfilesGetReturnsCopy(t *testing.T) {
 		t.Errorf("template mutated through Get: mode = %q", again.GetMode())
 	}
 }
+
+func TestLoadProfilesParsesControlPlaneTools(t *testing.T) {
+	dir := t.TempDir()
+	raw := `{
+  "mode": "execution",
+  "provider": {"type": "anthropic"},
+  "maxTurns": 20,
+  "timeout": 600,
+  "executor": {"type": "local"},
+  "tools": {
+    "builtIn": ["read_file", "run_command"],
+    "controlPlane": [
+      {
+        "name": "search_memory",
+        "description": "Search knowledge saved by earlier sessions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer"}
+          },
+          "required": ["query"]
+        },
+        "timeoutSeconds": 30
+      }
+    ]
+  }
+}`
+	if err := os.WriteFile(filepath.Join(dir, "memory.json"), []byte(raw), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	p, err := LoadProfiles(dir, "memory")
+	if err != nil {
+		t.Fatalf("LoadProfiles: %v", err)
+	}
+	cfg, ok := p.Get("memory")
+	if !ok {
+		t.Fatal("memory profile missing")
+	}
+	tools := cfg.GetTools().GetControlPlane()
+	if len(tools) != 1 {
+		t.Fatalf("control-plane tools = %v, want one entry", tools)
+	}
+	if got := tools[0].GetName(); got != "search_memory" {
+		t.Errorf("name = %q", got)
+	}
+	if got := tools[0].GetTimeoutSeconds(); got != 30 {
+		t.Errorf("timeout seconds = %d, want 30", got)
+	}
+	schema := tools[0].GetInputSchema().GetFields()
+	if got := schema["type"].GetStringValue(); got != "object" {
+		t.Errorf("input schema type = %q, want object", got)
+	}
+	props := schema["properties"].GetStructValue().GetFields()
+	if _, ok := props["query"]; !ok {
+		t.Errorf("input schema properties = %v, want a query property", props)
+	}
+}

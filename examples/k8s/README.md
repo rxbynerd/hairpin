@@ -2,8 +2,8 @@
 
 A minimal, applyable starting point for running hairpin on a cluster:
 hairpin itself, the three identities involved in a run, a bare-bones
-Redis, the profiles hairpin serves, and a placeholder Secret for
-provider API keys.
+Redis, Billet for shared memory, the profiles hairpin serves, and a
+placeholder Secret for provider API keys.
 
 Full narrative, including the trust boundary the two namespaces draw
 and what the harness's RBAC is for, is in
@@ -17,6 +17,7 @@ and what the harness's RBAC is for, is in
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `create` verb its Job launcher uses. |
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity that creates and execs into sandbox Pods, and the token-less `stirrup-sandbox` identity those Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise. |
+| `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only. |
 | `profiles.yaml` | ConfigMap | RunConfig profile templates, mounted at `--profiles`. |
 | `hairpin.yaml` | Deployment + Service | hairpin itself. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
@@ -26,9 +27,16 @@ and what the harness's RBAC is for, is in
 
 - `hairpin.yaml`: `containers[0].image` — a built-and-pushed hairpin
   image. The stirrup harness and sandbox images already default to
-  their published tags.
+  their published tags; the memory tools need a harness built from
+  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586)
+  until it merges.
+- `billet.yaml`: `containers[0].image` — `ghcr.io/rxbynerd/billet:latest`
+  is not published until
+  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) merges, so
+  point this at a Billet image built from that branch.
 - `profiles.yaml`: the `default` profile's model and permission
-  policy, or add profiles of your own.
+  policy, or add profiles of your own. The profile declares the memory
+  tools; a profile that omits them is opted out.
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
   other `secret://`-referenced keys your profiles need.
 

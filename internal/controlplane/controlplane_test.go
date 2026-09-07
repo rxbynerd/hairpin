@@ -31,8 +31,9 @@ type fakeStream struct {
 	onReceive func(n int)
 	received  int
 
-	mu   sync.Mutex
-	sent []*harnessv1.ControlEvent
+	mu      sync.Mutex
+	sent    []*harnessv1.ControlEvent
+	sendErr error
 }
 
 func newFakeStream(evs ...*harnessv1.HarnessEvent) *fakeStream {
@@ -62,8 +63,19 @@ func (f *fakeStream) Receive() (*harnessv1.HarnessEvent, error) {
 func (f *fakeStream) Send(ev *harnessv1.ControlEvent) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.sendErr != nil {
+		return f.sendErr
+	}
 	f.sent = append(f.sent, ev)
 	return nil
+}
+
+// failSends makes every later Send fail, standing in for a harness that
+// hung up.
+func (f *fakeStream) failSends(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sendErr = err
 }
 
 func (f *fakeStream) controls() []*harnessv1.ControlEvent {
@@ -78,6 +90,30 @@ func (f *fakeStream) types() []string {
 		out = append(out, ev.GetType())
 	}
 	return out
+}
+
+// testClock is a hand-advanced clock. Reads and advances are
+// serialised because the pump answers memory calls on detached
+// goroutines that read the clock while a test advances it.
+type testClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newTestClock() *testClock {
+	return &testClock{at: time.Unix(1700000000, 0)}
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
 }
 
 func testHandler(t *testing.T) (*Handler, store.Store, *registry.Registry) {
@@ -412,7 +448,6 @@ func TestRunTaskUnsupportedRequestsAreRecorded(t *testing.T) {
 	s := newFakeStream(
 		ready("hp-unsup"),
 		&harnessv1.HarnessEvent{Type: evBatchSubmission, RequestId: "b-1"},
-		&harnessv1.HarnessEvent{Type: evToolResultRequest, RequestId: "t-1"},
 		ready("hp-unsup"),
 		&harnessv1.HarnessEvent{Type: "future_event", Message: "hello from stirrup 2"},
 		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
@@ -424,7 +459,7 @@ func TestRunTaskUnsupportedRequestsAreRecorded(t *testing.T) {
 	if got := s.types(); !equalStrings(got, []string{ctlTaskAssignment}) {
 		t.Fatalf("controls = %v, want only the assignment", got)
 	}
-	want := []string{EventStatusChange, evBatchSubmission, evToolResultRequest, "future_event", evDone, EventStatusChange}
+	want := []string{EventStatusChange, evBatchSubmission, "future_event", evDone, EventStatusChange}
 	if got := eventTypes(events(t, st, "hp-unsup")); !equalStrings(got, want) {
 		t.Errorf("timeline = %v, want %v", got, want)
 	}
@@ -594,8 +629,8 @@ func TestTextDeltaCoalescingSplitsOnInterval(t *testing.T) {
 	h, st, _ := testHandler(t)
 	h.deltaFlushEvery = 500 * time.Millisecond
 	h.deltaFlushBytes = 1 << 20
-	clock := time.Unix(1700000000, 0)
-	h.now = func() time.Time { return clock }
+	clock := newTestClock()
+	h.now = clock.now
 	seedJob(t, st, "hp-time", job.StatusAwaitingHarness, nil)
 
 	s := newFakeStream(
@@ -605,7 +640,7 @@ func TestTextDeltaCoalescingSplitsOnInterval(t *testing.T) {
 	)
 	s.onReceive = func(n int) {
 		if n == 2 { // "a" is buffered; age it past the flush interval.
-			clock = clock.Add(time.Second)
+			clock.advance(time.Second)
 		}
 	}
 
@@ -651,12 +686,12 @@ func TestFinalTextCapped(t *testing.T) {
 
 func TestLastEventAtFlushedOnInterval(t *testing.T) {
 	h, st, _ := testHandler(t)
-	clock := time.Unix(1700000000, 0)
-	h.now = func() time.Time { return clock }
+	clock := newTestClock()
+	h.now = clock.now
 	h.lastEventFlush = 10 * time.Second
 	seedJob(t, st, "hp-live", job.StatusAwaitingHarness, nil)
 
-	assigned := clock
+	assigned := clock.now()
 	s := newFakeStream(
 		ready("hp-live"),
 		&harnessv1.HarnessEvent{Type: evHeartbeat},
@@ -666,15 +701,15 @@ func TestLastEventAtFlushedOnInterval(t *testing.T) {
 	s.onReceive = func(n int) {
 		switch n {
 		case 1:
-			clock = clock.Add(5 * time.Second)
+			clock.advance(5 * time.Second)
 		case 2:
 			if got := getJob(t, st, "hp-live").LastEventAt; !got.Equal(assigned) {
 				t.Errorf("LastEventAt flushed before the interval elapsed: %v", got)
 			}
-			clock = clock.Add(10 * time.Second)
+			clock.advance(10 * time.Second)
 		case 3:
-			if got := getJob(t, st, "hp-live").LastEventAt; !got.Equal(clock) {
-				t.Errorf("LastEventAt = %v, want the flushed %v", got, clock)
+			if got := getJob(t, st, "hp-live").LastEventAt; !got.Equal(clock.now()) {
+				t.Errorf("LastEventAt = %v, want the flushed %v", got, clock.now())
 			}
 		}
 	}

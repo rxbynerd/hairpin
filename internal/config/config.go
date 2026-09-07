@@ -4,7 +4,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,6 +45,11 @@ type Config struct {
 	// RedisPassword and RedisDB complete the Redis connection.
 	RedisPassword string
 	RedisDB       int
+
+	// BilletAddr is the "host:port" of Billet's RPC listener, backing the
+	// search_memory and save_memory control-plane tools. Empty disables
+	// memory: a run that calls either tool is refused.
+	BilletAddr string
 
 	// Launcher selects how harnesses start: "kubernetes" (a batch/v1
 	// Job per run) or "none" (started out-of-band).
@@ -126,6 +133,18 @@ func (c *Config) Validate() error {
 	}
 	if c.AdvertiseAddr == "" {
 		return fmt.Errorf("advertise address is required (harnesses must know where to dial back)")
+	}
+	if c.BilletAddr != "" {
+		host, port, err := net.SplitHostPort(c.BilletAddr)
+		if err != nil {
+			return fmt.Errorf("billet address must be host:port: %w", err)
+		}
+		if host == "" || port == "" {
+			return fmt.Errorf("billet address must be host:port, got %q", c.BilletAddr)
+		}
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("billet address port must be a number between 1 and 65535, got %q", port)
+		}
 	}
 	if c.RedisDB < 0 {
 		return fmt.Errorf("redis database number must be non-negative")

@@ -215,3 +215,21 @@ func TestK8sLaunchWithoutServiceAccountMountsNoToken(t *testing.T) {
 		t.Errorf("expected AutomountServiceAccountToken false, got %v", amt)
 	}
 }
+
+func TestJobLabelsKeepHairpinIdentity(t *testing.T) {
+	l := &K8s{cfg: config.HarnessConfig{Labels: map[string]string{
+		"team":                   "agents",
+		"app.kubernetes.io/name": "hairpin",
+	}}}
+
+	labels := l.jobLabels("hp-1")
+	if got := labels["app.kubernetes.io/name"]; got != "stirrup" {
+		t.Errorf("app.kubernetes.io/name = %q, want stirrup: NetworkPolicies select on it", got)
+	}
+	if got := labels["hairpin.rxbynerd.dev/job-id"]; got != "hp-1" {
+		t.Errorf("job-id label = %q, want hp-1", got)
+	}
+	if got := labels["team"]; got != "agents" {
+		t.Errorf("operator label team = %q, want agents", got)
+	}
+}

@@ -13,8 +13,8 @@ when the harness dials back in, records everything the harness streams,
 and lets the original caller — or anyone else, such as the bundled web
 UI — retrieve status, events, and the result by job ID.
 
-The name follows the equestrianism series (stirrup, haybale): a hairpin
-is the turn that reverses the direction of travel.
+The name follows the equestrianism series (stirrup, haybale, billet): a
+hairpin is the turn that reverses the direction of travel.
 
 ## Flow
 
@@ -26,11 +26,13 @@ caller ──SubmitJob──▶ hairpin ──creates──▶ K8s Job (stirrup 
                                ready.id = CONTROL_PLANE_SESSION_ID
                                         = "<job id>.<session token>")
 caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ hairpin ──▶ Redis
+harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemory──▶ billet
 ```
 
 1. `SubmitJob` validates the task, resolves a RunConfig from a named
    **profile** (a protojson RunConfig template) or an explicit
-   `run_config_json`, forces `runId` to the hairpin job ID, persists the
+   `run_config_json`, forces `runId` to the hairpin job ID, refuses a
+   `tools.controlPlane` declaration hairpin cannot answer, persists the
    job in Redis (`queued`), and asks the Launcher to start a harness
    (`launching`).
 2. The launcher creates a Kubernetes `batch/v1` Job running `stirrup job`
@@ -44,6 +46,10 @@ caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ 
 4. `permission_request` events are persisted as pending approvals;
    `AnswerPermission` (API or UI button) routes the decision onto the
    live stream via the in-process session registry.
+   `tool_result_request` events for the memory tools the run declared
+   are proxied to Billet and answered on the same stream with
+   `tool_result_response`; both are recorded on the timeline
+   ([`docs/memory.md`](memory.md)).
 5. `done.stop_reason` finalises the job: `success` → `succeeded`,
    `cancelled` → `cancelled`, anything else → `failed` (reason
    preserved verbatim — stirrup adds stop reasons over time). Stream
@@ -57,7 +63,8 @@ caller / web UI ──GetJob / WatchJob / CancelJob / AnswerPermission──▶ 
 | `internal/store` | `Store` interface + in-memory impl (tests/dev). |
 | `internal/store/redisstore` | Redis impl: jobs as hashes, events as capped streams, index as zset, blocking event subscription. |
 | `internal/registry` | In-process map of live harness sessions; the only bridge from API handlers to an open `RunTask` stream. |
-| `internal/controlplane` | connect-go handler for `stirrup.harness.v1.HarnessService` — correlation, assignment, event pump, permission bridging, terminal handling. |
+| `internal/controlplane` | connect-go handler for `stirrup.harness.v1.HarnessService` — correlation, assignment, event pump, permission bridging, memory-call admission and fulfilment, terminal handling. |
+| `internal/memory` | Billet client (connect-go, plaintext gRPC) and the `search_memory` / `save_memory` tool contracts: input validation, Billet's request limits, and the error policy that decides what a model is told. |
 | `internal/service` | Core operations (Submit/Get/List/Watch/Cancel/Answer) shared by the connect API and the web UI. |
 | `internal/api` | connect-go handler for `hairpin.v1.JobService`, a thin shim over `internal/service`. |
 | `internal/launcher` | `Launcher` interface; a client-go `batch/v1` Job impl and `None` for harnesses started out-of-band. |
@@ -104,17 +111,38 @@ a neighbouring pod could claim another job's stream and read its
 RunConfig. Both connect services cap received messages at 4 MiB,
 permission requests are capped per job, the web UI enforces same-origin
 on state-changing requests, and graceful shutdown cancels live runs
-before draining the listener.
+before draining the listener and then waits for in-flight memory calls.
+
+Memory widens the surface in two ways. Every run behind one hairpin
+reads and writes one Billet namespace, so model-authored content saved
+by one run reaches the context of later runs on any profile; run one
+deployment per trust domain. And because `SubmitJob` accepts a
+`run_config_json` that declares the memory tools, any caller who can
+reach hairpin's port can read and write that namespace — the
+NetworkPolicy in front of Billet restricts the network path, not the
+API path. Hairpin dials Billet over plaintext h2c, so memory content
+crosses the cluster network unencrypted alongside the control-plane
+stream. The control plane answers a `tool_result_request` only for a
+tool the job's stored RunConfig declared, caps concurrent and total
+memory calls per run, and refuses repeated request IDs. See
+[`docs/memory.md`](memory.md#trust-posture).
 
 ## Current limitations
 
 - Follow-up turns (`followUpGrace` / `user_response`) are not supported;
   one hairpin job represents one run.
 - `sandbox_token_request` receives an explicit `is_error` refusal.
-- Batch and asynchronous tool-result requests are recorded but not
-  answered. RunConfigs that depend on these protocol capabilities do
-  not currently fail validation at submit time; see
+- Asynchronous tool results are answered only for the two memory
+  tools; `SubmitJob` rejects a `tools.controlPlane` entry naming
+  anything else. Batch requests are recorded but not answered, and a
+  RunConfig that enables batch execution does not fail validation at
+  submit time; see
   [issue #1](https://github.com/rxbynerd/hairpin/issues/1).
+- Memory depends on two unmerged upstream changes:
+  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) for
+  the `tools.controlPlane` RunConfig surface and
+  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) for a
+  published Billet image. See [`docs/memory.md`](memory.md).
 - Only one hairpin replica is safe because the live session registry is
   in-process; see [issue #4](https://github.com/rxbynerd/hairpin/issues/4).
 - API/UI authentication, authorization, and transport TLS are not built

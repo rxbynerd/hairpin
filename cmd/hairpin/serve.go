@@ -24,6 +24,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/config"
 	"github.com/rxbynerd/hairpin/internal/controlplane"
 	"github.com/rxbynerd/hairpin/internal/launcher"
+	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/service"
 	"github.com/rxbynerd/hairpin/internal/store"
@@ -53,6 +54,7 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	fs.StringVar(&cfg.RedisAddr, "redis", "", "Redis address host:port (empty: in-memory store, dev only)")
 	fs.StringVar(&cfg.RedisPassword, "redis-password", "", "Redis password")
 	fs.IntVar(&cfg.RedisDB, "redis-db", 0, "Redis database number")
+	fs.StringVar(&cfg.BilletAddr, "billet-addr", "", "host:port of Billet's RPC listener, backing the memory tools (empty: memory disabled)")
 	fs.StringVar(&cfg.Launcher, "launcher", "kubernetes", "harness launcher: kubernetes or none")
 	fs.StringVar(&cfg.ProfilesDir, "profiles", "", "directory of RunConfig profile templates (<name>.json)")
 	fs.StringVar(&cfg.DefaultProfile, "default-profile", "default", "profile used when a submit names none")
@@ -134,11 +136,31 @@ func serve(cfg *config.Config) error {
 		return err
 	}
 
+	// One client decides both halves of the feature: what a submit may
+	// declare, and what the control plane will answer. Deriving them
+	// separately would let a run pass preflight and then be refused.
+	var memoryClient memory.Client
+	if cfg.BilletAddr != "" {
+		memoryClient = memory.NewBilletClient(cfg.BilletAddr)
+		logger.Info("memory tools enabled", "billet_addr", cfg.BilletAddr)
+	} else {
+		logger.Info("memory tools disabled; submits declaring them are rejected")
+	}
+
 	reg := registry.New()
-	svc := service.New(st, reg, l, profiles, logger, service.WithExecutorDefaults(cfg.Sandbox))
+	svc := service.New(st, reg, l, profiles, logger,
+		service.WithExecutorDefaults(cfg.Sandbox),
+		service.WithMemoryTools(memoryClient != nil))
+
+	cpOpts := []controlplane.Option{
+		controlplane.WithLogger(logger),
+		controlplane.WithMemory(memoryClient),
+	}
+
+	cp := controlplane.New(st, reg, cpOpts...)
 
 	mux := http.NewServeMux()
-	cpPath, cpHandler := controlplane.New(st, reg, controlplane.WithLogger(logger)).NewHTTPHandler()
+	cpPath, cpHandler := cp.NewHTTPHandler()
 	mux.Handle(cpPath, cpHandler)
 	// 4 MiB bounds a submit (RunConfigs are small; dynamic context is
 	// capped harness-side at 50 KiB per entry) without letting one
@@ -196,6 +218,7 @@ func serve(cfg *config.Config) error {
 		logger.Warn("shutdown grace expired with streams still open", "error", err)
 	}
 	svc.WaitForLaunches()
+	cp.WaitForMemoryCalls()
 	return nil
 }
 

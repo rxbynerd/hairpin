@@ -5,8 +5,8 @@
 # in-cluster hairpin discovers its namespace from its projected
 # ServiceAccount and advertises hairpin.<namespace>.svc on its listen
 # port. What remains are the pieces only an operator can name: where
-# Redis is, which profiles to serve, and the identities the harness and
-# its sandboxes run as.
+# Redis and Billet are, which profiles to serve, and the identities the
+# harness and its sandboxes run as.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -40,6 +40,7 @@ spec:
             - --harness-secrets=provider-api-keys
             - --sandbox-namespace=hairpin-sandboxes
             - --sandbox-service-account=stirrup-sandbox
+            - --billet-addr=billet.hairpin.svc:8141
           ports:
             - containerPort: 8130
               name: h2c
