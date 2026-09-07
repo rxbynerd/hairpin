@@ -91,10 +91,10 @@ func TestMintRoundTrip(t *testing.T) {
 	}
 	// The wire claim is Unix seconds; compare at that resolution rather
 	// than against Mint's sub-second expiresAt.
-	if exp.Time.Unix() != expiresAt.Unix() {
+	if exp.Unix() != expiresAt.Unix() {
 		t.Errorf("token exp = %v, Mint returned %v", exp.Time, expiresAt)
 	}
-	if d := expiresAt.Sub(time.Now()); d <= 0 || d > 15*time.Minute {
+	if d := time.Until(expiresAt); d <= 0 || d > 15*time.Minute {
 		t.Errorf("expiresAt %v not within the configured 15m TTL", expiresAt)
 	}
 }
@@ -235,7 +235,7 @@ func TestJWKSHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -251,7 +251,7 @@ func TestJWKSHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer postResp.Body.Close()
+	defer func() { _ = postResp.Body.Close() }()
 	if postResp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST status = %d, want 405", postResp.StatusCode)
 	}

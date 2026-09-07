@@ -95,8 +95,8 @@ func TestGenerateKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParsePrivateKeyPEM(round trip): %v", err)
 	}
-	if parsed.D.Cmp(priv.D) != 0 {
-		t.Error("round-tripped private scalar does not match the generated key")
+	if !parsed.Equal(priv) {
+		t.Error("round-tripped private key does not match the generated key")
 	}
 }
 

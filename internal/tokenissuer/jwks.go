@@ -77,7 +77,14 @@ func coords(pub *ecdsa.PublicKey) (x, y string, err error) {
 	if pub == nil || pub.Curve == nil || pub.Curve.Params().Name != "P-256" {
 		return "", "", fmt.Errorf("key is not on the P-256 curve")
 	}
-	xb := pub.X.FillBytes(make([]byte, coordSize))
-	yb := pub.Y.FillBytes(make([]byte, coordSize))
+	// Bytes yields the uncompressed SEC 1 point: 0x04 || X || Y.
+	raw, err := pub.Bytes()
+	if err != nil {
+		return "", "", fmt.Errorf("encode public key: %w", err)
+	}
+	if len(raw) != 1+2*coordSize || raw[0] != 0x04 {
+		return "", "", fmt.Errorf("unexpected public key encoding (%d bytes)", len(raw))
+	}
+	xb, yb := raw[1:1+coordSize], raw[1+coordSize:]
 	return base64.RawURLEncoding.EncodeToString(xb), base64.RawURLEncoding.EncodeToString(yb), nil
 }
