@@ -208,13 +208,16 @@ why:
   service, and stirrup's own dev/kind loop
   (`stirrup/scripts/dev/`) does not exercise it either.
 
-So the `git` profile only reaches haybale today on a CNI that does not
-enforce NetworkPolicy — kind's default `kindnet` among them, which is
-why the kind development loop (`scripts/dev/kind-up.sh`) works. A
-NetworkPolicy-enforcing production cluster needs `allowlist` mode plus
-stirrup's `examples/k8s/egress-proxy/` manifests deployed alongside the
-sandbox namespace, with haybale's `host:port` in its allowlist —
-tracked as a follow-up in `TODO.md` Wave 6 rather than built here.
+So the `git` profile only reaches haybale on a CNI that does not
+enforce NetworkPolicy. **Current kind releases are not such a CNI**:
+the `kindnetd` version the dev cluster ships enforces NetworkPolicy,
+so the deny-all from `mode: "none"` cuts the sandbox off from haybale
+there too and `git-smoke-test` cannot pass. Any cluster running the
+`git` profile — the kind dev loop included — needs `allowlist` mode
+plus stirrup's `examples/k8s/egress-proxy/` manifests deployed
+alongside the sandbox namespace, with haybale's `host:port` in its
+allowlist — tracked as a follow-up in `TODO.md` Wave 6 rather than
+built here.
 
 ## Trust posture
 

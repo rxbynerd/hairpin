@@ -128,6 +128,16 @@ tool the job's stored RunConfig declared, caps concurrent and total
 memory calls per run, and refuses repeated request IDs. See
 [`docs/memory.md`](memory.md#trust-posture).
 
+Sandbox identity tokens raise this posture's stakes: with issuance
+configured, anyone who can reach the JobService can name a
+`repo_scope` and receive runs holding a JWT haybale will honour, up to
+whatever ceiling haybale's own default-deny policy grants the job's
+identity. That policy is the real authorization boundary, so keep it
+narrow, but an unauthenticated API in front of a credential issuer is
+a sharper trade than one in front of compute alone. Weigh that before
+enabling `--sandbox-token-key` anywhere the API is reachable beyond
+trusted operators.
+
 ## Current limitations
 
 - Follow-up turns (`followUpGrace` / `user_response`) are not supported;
