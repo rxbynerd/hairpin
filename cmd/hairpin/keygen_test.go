@@ -63,6 +63,25 @@ func TestRunKeygen(t *testing.T) {
 	}
 }
 
+func TestRunKeygenRefusesExistingFiles(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "key.pem")
+	if err := os.WriteFile(keyPath, []byte("old key"), 0o644); err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+
+	if err := runKeygen([]string{"--out", keyPath}); err == nil {
+		t.Fatal("runKeygen overwrote an existing key file")
+	}
+	got, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read key: %v", err)
+	}
+	if string(got) != "old key" {
+		t.Error("existing key file was modified")
+	}
+}
+
 func TestRunKeygenRequiresOut(t *testing.T) {
 	if err := runKeygen(nil); err == nil {
 		t.Fatal("runKeygen succeeded without --out")

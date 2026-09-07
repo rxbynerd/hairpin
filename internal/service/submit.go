@@ -161,6 +161,11 @@ func validateRunConfig(cfg *harnessv1.RunConfig) error {
 // rejected rather than bloating every issued token.
 const maxRepoScopeEntries = 32
 
+// maxRepoScopeEntryBytes bounds one repo_scope glob. A host/owner/repo
+// pattern is far shorter; the cap keeps a caller-supplied claim from
+// bloating every minted token.
+const maxRepoScopeEntryBytes = 256
+
 // validateRepoScope rejects a repo_scope that could not possibly be a
 // list of haybale.dev/repos glob patterns, before it reaches the job
 // record. An empty scope is valid: it grants no repo access.
@@ -172,8 +177,11 @@ func validateRepoScope(scope []string) error {
 		if entry == "" {
 			return fmt.Errorf("repo_scope entries must not be empty: %w", ErrInvalidArgument)
 		}
-		if strings.ContainsFunc(entry, unicode.IsSpace) {
-			return fmt.Errorf("repo_scope entry %q must not contain whitespace: %w", entry, ErrInvalidArgument)
+		if len(entry) > maxRepoScopeEntryBytes {
+			return fmt.Errorf("repo_scope entry of %d bytes exceeds the %d byte limit: %w", len(entry), maxRepoScopeEntryBytes, ErrInvalidArgument)
+		}
+		if strings.ContainsFunc(entry, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) }) {
+			return fmt.Errorf("repo_scope entry %q must not contain whitespace or control characters: %w", entry, ErrInvalidArgument)
 		}
 	}
 	return nil

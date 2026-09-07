@@ -228,6 +228,9 @@ func (c *Config) Validate() error {
 	if c.Sandbox.Namespace == "" {
 		c.Sandbox.Namespace = c.Harness.Namespace
 	}
+	if c.SandboxToken.KeyPath == "" && (c.SandboxToken.Issuer != "" || c.SandboxToken.Audience != "") {
+		return fmt.Errorf("sandbox-token-issuer and sandbox-token-audience have no effect without sandbox-token-key")
+	}
 	if c.SandboxToken.KeyPath != "" {
 		if c.SandboxToken.Issuer == "" {
 			return fmt.Errorf("sandbox-token-issuer is required when sandbox-token-key is set")

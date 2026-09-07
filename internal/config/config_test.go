@@ -57,7 +57,8 @@ func TestValidateSandboxToken(t *testing.T) {
 			wantErr: "sandbox-token-ttl must be positive",
 		},
 		{
-			name: "issuer and audience without a key is fine (issuance stays disabled)",
+			name:    "issuer and audience without a key is a misconfiguration",
+			wantErr: "have no effect without sandbox-token-key",
 			mutate: func(c *Config) {
 				c.SandboxToken = SandboxTokenConfig{Issuer: "iss", Audience: "aud"}
 			},

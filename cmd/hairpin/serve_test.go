@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/hairpin/internal/config"
 	"github.com/rxbynerd/hairpin/internal/telemetry"
@@ -35,6 +36,8 @@ func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
 		{name: "unknown telemetry protocol", flag: "-telemetry-protocol=thrift", wantErr: "unknown telemetry protocol"},
 		{name: "sample ratio above one", flag: "-telemetry-sample-ratio=1.5", wantErr: "sample ratio must be between 0 and 1"},
 		{name: "negative metric interval", flag: "-telemetry-metric-interval=-1s", wantErr: "metric interval must be non-negative"},
+		{name: "sandbox token key without an issuer", flag: "-sandbox-token-key=/etc/hairpin/key.pem", wantErr: "sandbox-token-issuer is required"},
+		{name: "sandbox token audience without a key", flag: "-sandbox-token-audience=https://haybale.internal", wantErr: "have no effect without sandbox-token-key"},
 	}
 
 	for _, tt := range tests {
@@ -127,6 +130,16 @@ func TestParseServeFlagsTelemetryProtocolFromEnvironment(t *testing.T) {
 	}
 	if cfg.Telemetry.Protocol != telemetry.ProtocolHTTP {
 		t.Errorf("protocol = %q, want %s from the environment", cfg.Telemetry.Protocol, telemetry.ProtocolHTTP)
+	}
+}
+
+func TestParseServeFlagsWiresSandboxTokenTTL(t *testing.T) {
+	cfg, err := parseServeFlags([]string{"-launcher=none", "-advertise=hairpin.example:8130", "-sandbox-token-ttl=2m"})
+	if err != nil {
+		t.Fatalf("parseServeFlags: %v", err)
+	}
+	if cfg.SandboxToken.TTL != 2*time.Minute {
+		t.Errorf("sandbox token TTL = %v, want 2m", cfg.SandboxToken.TTL)
 	}
 }
 

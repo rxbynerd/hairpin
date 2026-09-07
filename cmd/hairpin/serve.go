@@ -199,6 +199,10 @@ func serve(cfg *config.Config) error {
 	} else {
 		logger.Info("sandbox identity token issuance enabled",
 			"issuer", cfg.SandboxToken.Issuer, "audience", cfg.SandboxToken.Audience, "kid", issuer.KeyID())
+		if cfg.SandboxToken.TTL > time.Hour {
+			logger.Warn("sandbox identity token TTL is longer than an hour; a leaked token stays valid for the whole window",
+				"ttl", cfg.SandboxToken.TTL)
+		}
 	}
 
 	reg := registry.New()

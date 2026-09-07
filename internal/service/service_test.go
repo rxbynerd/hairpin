@@ -296,6 +296,16 @@ func TestSubmitValidationFailures(t *testing.T) {
 			"repo_scope entries must not be empty",
 		},
 		{
+			"repo scope entry too long",
+			SubmitParams{Prompt: "x", RepoScope: []string{"github.com/" + strings.Repeat("a", 300)}},
+			"exceeds the 256 byte limit",
+		},
+		{
+			"repo scope entry has a control character",
+			SubmitParams{Prompt: "x", RepoScope: []string{"github.com/rxbynerd/\x00evil"}},
+			"must not contain whitespace or control characters",
+		},
+		{
 			"repo scope entry has whitespace",
 			SubmitParams{Prompt: "x", RepoScope: []string{"github.com/rxbynerd/ *"}},
 			"must not contain whitespace",

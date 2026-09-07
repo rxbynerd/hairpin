@@ -32,8 +32,8 @@ func runKeygen(args []string) error {
 	if err != nil {
 		return fmt.Errorf("encode key: %w", err)
 	}
-	if err := os.WriteFile(*out, pemBytes, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", *out, err)
+	if err := writeNew(*out, pemBytes, 0o600); err != nil {
+		return err
 	}
 
 	jwks, err := tokenissuer.JWKSDocument(&priv.PublicKey)
@@ -44,8 +44,8 @@ func runKeygen(args []string) error {
 		if _, err := fmt.Println(string(jwks)); err != nil {
 			return err
 		}
-	} else if err := os.WriteFile(*jwksOut, append(jwks, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", *jwksOut, err)
+	} else if err := writeNew(*jwksOut, append(jwks, '\n'), 0o644); err != nil {
+		return err
 	}
 
 	kid, err := tokenissuer.KeyID(&priv.PublicKey)
@@ -53,5 +53,23 @@ func runKeygen(args []string) error {
 		return fmt.Errorf("compute kid: %w", err)
 	}
 	fmt.Fprintln(os.Stderr, "kid:", kid)
+	return nil
+}
+
+// writeNew creates path exclusively with mode, so an existing key is
+// never overwritten and a pre-existing file cannot lend the key its
+// wider permissions.
+func writeNew(path string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
 	return nil
 }
