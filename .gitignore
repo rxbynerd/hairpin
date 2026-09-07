@@ -2,3 +2,5 @@
 *.test
 .env*
 **/.claude/mind.mv2*
+**/.claude/.mind.mv2*
+**/.claude/mind.manifest*
