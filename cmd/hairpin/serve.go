@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/rxbynerd/hairpin/gen/hairpin/v1/hairpinv1connect"
@@ -29,6 +30,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/service"
 	"github.com/rxbynerd/hairpin/internal/store"
 	"github.com/rxbynerd/hairpin/internal/store/redisstore"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 	"github.com/rxbynerd/hairpin/internal/web"
 )
 
@@ -72,6 +74,13 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	fs.StringVar(&cfg.Sandbox.ServiceAccount, "sandbox-service-account", "", "ServiceAccount for sandbox Pods; its token is never mounted")
 	fs.StringVar(&cfg.Sandbox.Runtime, "sandbox-runtime", "", "RuntimeClassName for sandbox Pods: runc, gvisor, kata-qemu, kata-fc, kata-clh (empty: cluster default)")
 
+	fs.StringVar(&cfg.Telemetry.Exporter, "telemetry", telemetry.ExporterNone, "OpenTelemetry exporter: none, otlp, or stdout")
+	fs.StringVar(&cfg.Telemetry.Protocol, "telemetry-protocol", envOr("OTEL_EXPORTER_OTLP_PROTOCOL", telemetry.ProtocolGRPC), "OTLP transport: grpc or http/protobuf")
+	fs.StringVar(&cfg.Telemetry.Endpoint, "telemetry-endpoint", "", "OTLP endpoint URL (empty: OTEL_EXPORTER_OTLP_ENDPOINT, then localhost)")
+	fs.Float64Var(&cfg.Telemetry.SampleRatio, "telemetry-sample-ratio", 1, "head-sampling probability for traces hairpin starts, 0 to 1")
+	fs.StringVar(&cfg.Telemetry.ServiceName, "telemetry-service-name", "", "service.name reported to the collector (empty: OTEL_SERVICE_NAME, then hairpin)")
+	fs.DurationVar(&cfg.Telemetry.MetricInterval, "telemetry-metric-interval", telemetry.DefaultMetricInterval, "how often metrics are exported")
+
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -102,6 +111,15 @@ func defaultAdvertiseAddr(namespace, listenAddr string) string {
 	return fmt.Sprintf("hairpin.%s.svc:%s", namespace, port)
 }
 
+// envOr returns the environment variable named by key, or fallback when
+// it is unset or empty.
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func splitComma(s string) []string {
 	var out []string
 	for _, part := range strings.Split(s, ",") {
@@ -116,6 +134,16 @@ func splitComma(s string) []string {
 // web UI onto one h2c listener.
 func serve(cfg *config.Config) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	tel, shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Telemetry, logger)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := shutdownTelemetry(context.Background()); err != nil {
+			logger.Warn("telemetry shutdown", "error", err)
+		}
+	}()
 
 	st, err := buildStore(cfg, logger)
 	if err != nil {
@@ -150,22 +178,39 @@ func serve(cfg *config.Config) error {
 	reg := registry.New()
 	svc := service.New(st, reg, l, profiles, logger,
 		service.WithExecutorDefaults(cfg.Sandbox),
-		service.WithMemoryTools(memoryClient != nil))
+		service.WithMemoryTools(memoryClient != nil),
+		service.WithTelemetry(tel))
 
 	cpOpts := []controlplane.Option{
 		controlplane.WithLogger(logger),
 		controlplane.WithMemory(memoryClient),
+		controlplane.WithTelemetry(tel),
 	}
 
 	cp := controlplane.New(st, reg, cpOpts...)
 
+	// RPC spans and metrics come from the interceptor; hairpin's own
+	// spans hang off them. Without an exporter it is left out entirely
+	// rather than relying on no-op instruments.
+	var rpcOpts []connect.HandlerOption
+	if tel != nil {
+		// A harness stream carries thousands of text deltas, and one
+		// span event each would swamp the trace.
+		interceptor, err := otelconnect.NewInterceptor(otelconnect.WithoutTraceEvents())
+		if err != nil {
+			return fmt.Errorf("build telemetry interceptor: %w", err)
+		}
+		rpcOpts = append(rpcOpts, connect.WithInterceptors(interceptor))
+	}
+
 	mux := http.NewServeMux()
-	cpPath, cpHandler := cp.NewHTTPHandler()
+	cpPath, cpHandler := cp.NewHTTPHandler(rpcOpts...)
 	mux.Handle(cpPath, cpHandler)
 	// 4 MiB bounds a submit (RunConfigs are small; dynamic context is
 	// capped harness-side at 50 KiB per entry) without letting one
 	// request balloon memory.
-	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc), connect.WithReadMaxBytes(4<<20))
+	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc),
+		append([]connect.HandlerOption{connect.WithReadMaxBytes(4 << 20)}, rpcOpts...)...)
 	mux.Handle(apiPath, apiHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
