@@ -93,13 +93,24 @@ token="$("${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gite
     --scopes read:repository,write:repository --raw)"
 [ -n "${token}" ] || fail "gitea did not return an access token"
 
-# Token auth, not basic auth: the account's password differs between a
-# first run and a rerun, and the token was just minted for this one.
-curl -fsS -H "Authorization: token ${token}" \
+# Creating a repo needs write:user, which haybale's upstream credential
+# has no business holding, so the seed repo is created with a second,
+# script-only token. Token auth rather than basic auth: the account's
+# password differs between a first run and a rerun.
+bootstrap_token="$("${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user generate-access-token \
+    --username "${GITEA_USER}" --token-name "${GITEA_TOKEN_NAME}-bootstrap" \
+    --scopes write:user,write:repository --raw)"
+[ -n "${bootstrap_token}" ] || fail "gitea did not return a bootstrap token"
+
+status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: token ${bootstrap_token}" \
     -H 'Content-Type: application/json' \
     -d "{\"name\": \"${GITEA_REPO}\", \"private\": false, \"auto_init\": true}" \
-    http://localhost:3000/api/v1/user/repos >/dev/null \
-    || log "repo create failed (may already exist); continuing"
+    http://localhost:3000/api/v1/user/repos)"
+case "${status}" in
+    201) log "created ${GITEA_USER}/${GITEA_REPO}" ;;
+    409) log "${GITEA_USER}/${GITEA_REPO} already exists; continuing" ;;
+    *)   fail "repo create returned HTTP ${status}" ;;
+esac
 
 kill "${gitea_forward_pid}" 2>/dev/null || true
 trap 'rm -f "${archive}"' EXIT
