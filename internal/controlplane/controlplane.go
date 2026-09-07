@@ -56,15 +56,22 @@ const EventStatusChange = "status_change"
 // event: the workload died, was evicted, or lost its connection.
 const msgStreamClosed = "harness stream closed without done"
 
-// sandboxTokenRefusal is returned for sandbox_token_request when no
-// issuer is configured, so opted-in run configs abort immediately
-// instead of waiting out the harness's 60s fail-closed timeout.
-const sandboxTokenRefusal = "hairpin does not issue sandbox identity tokens"
+// Refusals for a sandbox_token_request. Each is sent at once so an
+// opted-in run config aborts immediately instead of waiting out the
+// harness's 60s fail-closed timeout. The issuance failure is
+// deliberately generic: the real error is logged, not sent.
+const (
+	sandboxTokenRefusal           = "hairpin does not issue sandbox identity tokens"
+	sandboxTokenUndeclaredRefusal = "this run's config does not declare a sandbox identity"
+	sandboxTokenLimitRefusal      = "this run has exceeded hairpin's sandbox token request limit"
+	sandboxTokenIssuanceFailure   = "hairpin failed to issue a sandbox identity token"
+)
 
-// sandboxTokenIssuanceFailure is returned for sandbox_token_request
-// when an issuer is configured but minting failed. It is deliberately
-// generic: the real error is logged, not sent to the harness.
-const sandboxTokenIssuanceFailure = "hairpin failed to issue a sandbox identity token"
+// maxSandboxTokenRequests bounds the tokens one harness stream may
+// mint. The harness fetches exactly one before creating its sandbox;
+// every request past the cap is refused so a looping harness cannot
+// keep a pump busy signing credentials.
+const maxSandboxTokenRequests = 8
 
 // Refusals for a tool_result_request hairpin will not answer. Each is
 // sent at once so the harness does not block for its per-call timeout.
@@ -162,10 +169,15 @@ func WithTelemetry(rec *telemetry.Recorder) Option {
 
 // WithSandboxTokenIssuer enables sandbox_token_request issuance: a
 // harness request is answered with a signed token instead of the
-// explicit refusal. A nil issuer (the default) leaves issuance
-// disabled.
+// explicit refusal. Callers must pass a real issuer; a typed nil
+// pointer would satisfy the interface and dereference at first use.
 func WithSandboxTokenIssuer(issuer SandboxTokenIssuer) Option {
-	return func(h *Handler) { h.issuer = issuer }
+	return func(h *Handler) {
+		if issuer == nil {
+			return
+		}
+		h.issuer = issuer
+	}
 }
 
 // New returns a control-plane handler backed by st, publishing live
@@ -345,7 +357,10 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	h.appendStatus(ctx, jobID, job.StatusRunning, started)
 	h.log.Info("harness assigned", "job_id", jobID, "harness_version", first.GetHarnessVersion())
 
-	return h.pump(ctx, jobID, sess, declaredControlPlaneTools(cfg)).run()
+	p := h.pump(ctx, jobID, sess, declaredControlPlaneTools(cfg))
+	p.repoScope = j.RepoScope
+	p.sandboxIdentityDeclared = cfg.GetExecutor().GetSandboxIdentity() != nil
+	return p.run()
 }
 
 // declaredControlPlaneTools is the set of control-plane tool names the

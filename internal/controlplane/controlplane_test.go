@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -19,6 +20,13 @@ import (
 )
 
 const testRunConfig = `{"runId":"hp-test","prompt":"do the thing","maxTurns":4}`
+
+// testRunConfigSandboxIdentity opts the run into sandbox identity
+// tokens, which is what token issuance is gated on.
+const testRunConfigSandboxIdentity = `{"runId":"hp-test","prompt":"do the thing","maxTurns":4,"executor":{"type":"k8s","sandboxIdentity":{"source":"control-plane","audience":"https://haybale.internal"}}}`
+
+// withSandboxIdentity is a seedJob mutation selecting testRunConfigSandboxIdentity.
+func withSandboxIdentity(j *job.Job) { j.RunConfigJSON = testRunConfigSandboxIdentity }
 
 // fakeStream is a channel-backed stand-in for connect's bidi stream.
 // Closing in ends the stream with endErr (io.EOF by default).
@@ -481,6 +489,7 @@ func TestRunTaskIssuesSandboxToken(t *testing.T) {
 	issuer := &fakeIssuer{audience: "https://haybale.internal"}
 	h, st, _ := testHandlerWithIssuer(t, issuer)
 	seedJob(t, st, "hp-sbx-ok", job.StatusAwaitingHarness, func(j *job.Job) {
+		withSandboxIdentity(j)
 		j.RepoScope = []string{"github.com/rxbynerd/*"}
 	})
 
@@ -522,7 +531,7 @@ func TestRunTaskIssuesSandboxToken(t *testing.T) {
 func TestRunTaskSandboxTokenMintErrorIsGeneric(t *testing.T) {
 	issuer := &fakeIssuer{audience: "aud", err: errors.New("kms unavailable: rate limited")}
 	h, st, _ := testHandlerWithIssuer(t, issuer)
-	seedJob(t, st, "hp-sbx-err", job.StatusAwaitingHarness, nil)
+	seedJob(t, st, "hp-sbx-err", job.StatusAwaitingHarness, withSandboxIdentity)
 
 	s := newFakeStream(
 		ready("hp-sbx-err"),
@@ -551,7 +560,7 @@ func TestRunTaskSandboxTokenMintErrorIsGeneric(t *testing.T) {
 func TestRunTaskSandboxTokenAudienceMismatchStillIssues(t *testing.T) {
 	issuer := &fakeIssuer{audience: "https://haybale.internal"}
 	h, st, _ := testHandlerWithIssuer(t, issuer)
-	seedJob(t, st, "hp-sbx-aud", job.StatusAwaitingHarness, nil)
+	seedJob(t, st, "hp-sbx-aud", job.StatusAwaitingHarness, withSandboxIdentity)
 
 	s := newFakeStream(
 		ready("hp-sbx-aud"),
@@ -574,7 +583,7 @@ func TestRunTaskSandboxTokenAudienceMismatchStillIssues(t *testing.T) {
 func TestRunTaskSandboxTokenNeverInTimeline(t *testing.T) {
 	issuer := &fakeIssuer{audience: "aud"}
 	h, st, _ := testHandlerWithIssuer(t, issuer)
-	seedJob(t, st, "hp-sbx-secret", job.StatusAwaitingHarness, nil)
+	seedJob(t, st, "hp-sbx-secret", job.StatusAwaitingHarness, withSandboxIdentity)
 
 	s := newFakeStream(
 		ready("hp-sbx-secret"),
@@ -593,6 +602,78 @@ func TestRunTaskSandboxTokenNeverInTimeline(t *testing.T) {
 		if strings.Contains(ev.PayloadJSON, token) {
 			t.Errorf("minted token leaked into timeline event %q: %s", ev.Type, ev.PayloadJSON)
 		}
+	}
+}
+
+func TestRunTaskRefusesSandboxTokenForUndeclaredIdentity(t *testing.T) {
+	issuer := &fakeIssuer{audience: "aud"}
+	h, st, _ := testHandlerWithIssuer(t, issuer)
+	seedJob(t, st, "hp-sbx-undeclared", job.StatusAwaitingHarness, nil)
+
+	s := newFakeStream(
+		ready("hp-sbx-undeclared"),
+		&harnessv1.HarnessEvent{Type: evSandboxTokenRequest, RequestId: "sbx-5"},
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "setup_failed"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	resp := s.controls()[1]
+	if !resp.GetIsError().GetValue() || resp.GetReason() != sandboxTokenUndeclaredRefusal {
+		t.Errorf("response = is_error %v reason %q, want the undeclared refusal", resp.GetIsError().GetValue(), resp.GetReason())
+	}
+	if len(issuer.minted) != 0 {
+		t.Errorf("Mint called %d times for a run that never declared a sandbox identity", len(issuer.minted))
+	}
+}
+
+func TestRunTaskSandboxTokenEmptyScopeReachesIssuerEmpty(t *testing.T) {
+	issuer := &fakeIssuer{audience: "aud"}
+	h, st, _ := testHandlerWithIssuer(t, issuer)
+	seedJob(t, st, "hp-sbx-noscope", job.StatusAwaitingHarness, withSandboxIdentity)
+
+	s := newFakeStream(
+		ready("hp-sbx-noscope"),
+		&harnessv1.HarnessEvent{Type: evSandboxTokenRequest, RequestId: "sbx-6"},
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if len(issuer.minted) != 1 || len(issuer.minted[0].scope) != 0 {
+		t.Fatalf("Mint calls = %+v, want one call with an empty scope", issuer.minted)
+	}
+}
+
+func TestRunTaskSandboxTokenRequestsAreCapped(t *testing.T) {
+	issuer := &fakeIssuer{audience: "aud"}
+	h, st, _ := testHandlerWithIssuer(t, issuer)
+	seedJob(t, st, "hp-sbx-cap", job.StatusAwaitingHarness, withSandboxIdentity)
+
+	evs := []*harnessv1.HarnessEvent{ready("hp-sbx-cap")}
+	for i := 0; i <= maxSandboxTokenRequests; i++ {
+		evs = append(evs, &harnessv1.HarnessEvent{Type: evSandboxTokenRequest, RequestId: fmt.Sprintf("sbx-cap-%d", i)})
+	}
+	evs = append(evs, &harnessv1.HarnessEvent{Type: evSandboxTokenRequest, RequestId: strings.Repeat("x", maxRequestIDBytes+1)})
+	evs = append(evs, &harnessv1.HarnessEvent{Type: evDone, StopReason: "success"})
+	s := newFakeStream(evs...)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	if len(issuer.minted) != maxSandboxTokenRequests {
+		t.Errorf("Mint calls = %d, want exactly %d", len(issuer.minted), maxSandboxTokenRequests)
+	}
+	ctls := s.controls()
+	// task_assignment, then one response per request up to and including
+	// the first refusal; the oversized id gets no answer at all.
+	if want := 1 + maxSandboxTokenRequests + 1; len(ctls) != want {
+		t.Fatalf("controls = %d, want %d: %v", len(ctls), want, s.types())
+	}
+	last := ctls[len(ctls)-1]
+	if !last.GetIsError().GetValue() || last.GetReason() != sandboxTokenLimitRefusal {
+		t.Errorf("response past the cap = is_error %v reason %q, want the limit refusal", last.GetIsError().GetValue(), last.GetReason())
 	}
 }
 

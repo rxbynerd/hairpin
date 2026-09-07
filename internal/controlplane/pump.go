@@ -42,6 +42,13 @@ type eventPump struct {
 
 	permissionsSeen int
 
+	// Sandbox token issuance state. repoScope is the job's grant as
+	// stored at submit; the declared flag mirrors the memory path's
+	// rule that a run only receives what its config asked for.
+	repoScope               []string
+	sandboxIdentityDeclared bool
+	sandboxTokens           int
+
 	// Memory admission state, all owned by the pump goroutine. The
 	// semaphore is the one piece the fulfilment goroutines touch, and
 	// only to release their slot.
@@ -238,10 +245,28 @@ func (p *eventPump) putPermission(ev *harnessv1.HarnessEvent, at time.Time) {
 // that lets an opted-in run config fail fast rather than wait out the
 // harness's 60s timeout.
 func (p *eventPump) handleSandboxTokenRequest(ev *harnessv1.HarnessEvent) {
+	// A correlation id this long cannot be echoed back safely, and the
+	// harness has no use for an answer it cannot match.
+	if len(ev.GetRequestId()) > maxRequestIDBytes {
+		p.h.log.Warn("ignoring sandbox_token_request with an oversized request id",
+			"job_id", p.jobID, "request_id_bytes", len(ev.GetRequestId()))
+		return
+	}
 	if p.h.issuer == nil {
 		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenRefusal)
 		return
 	}
+	if !p.sandboxIdentityDeclared {
+		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenUndeclaredRefusal)
+		return
+	}
+	if p.sandboxTokens >= maxSandboxTokenRequests {
+		p.h.log.Warn("sandbox token request cap reached; refusing",
+			"job_id", p.jobID, "request_id", ev.GetRequestId())
+		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenLimitRefusal)
+		return
+	}
+	p.sandboxTokens++
 
 	// The harness's requested audience is informational only (proto
 	// contract): the configured audience always wins. A mismatch is
@@ -252,21 +277,19 @@ func (p *eventPump) handleSandboxTokenRequest(ev *harnessv1.HarnessEvent) {
 			"job_id", p.jobID, "requested_audience", aud, "configured_audience", p.h.issuer.Audience())
 	}
 
-	j, err := p.h.store.GetJob(p.ctx, p.jobID)
-	if err != nil {
-		p.h.log.Error("failed to load job for sandbox token issuance",
-			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
-		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenIssuanceFailure)
-		return
-	}
-
-	token, expiresAt, err := p.h.issuer.Mint(p.jobID, j.RepoScope)
+	token, expiresAt, err := p.h.issuer.Mint(p.jobID, p.repoScope)
 	if err != nil {
 		p.h.log.Error("failed to mint sandbox identity token",
 			"job_id", p.jobID, "request_id", ev.GetRequestId(), "error", err)
 		p.sendSandboxTokenResponse(ev, "", time.Time{}, true, sandboxTokenIssuanceFailure)
 		return
 	}
+	// The audit record for a minted credential: haybale logs the same
+	// job ID as the token's subject, which is what joins the two sides.
+	p.h.log.Info("issued sandbox identity token",
+		"job_id", p.jobID, "request_id", ev.GetRequestId(),
+		"audience", p.h.issuer.Audience(), "expires_at", expiresAt.UTC().Format(time.RFC3339),
+		"repo_scope", p.repoScope)
 	p.sendSandboxTokenResponse(ev, token, expiresAt, false, "")
 }
 
