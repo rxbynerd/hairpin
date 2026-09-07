@@ -162,12 +162,16 @@ given), and hairpin applies these server-owned values before launch:
 | `executor.k8sNamespace` | `-sandbox-namespace`, when the template names none. |
 | `executor.k8sServiceAccount` | `-sandbox-service-account`, when the template names none. |
 | `executor.runtime` | `-sandbox-runtime`, when the template names none. |
+| `trace_emitter` | `{type: "otel", endpoint: -harness-telemetry-endpoint}`, when the template names none. |
 
 The four executor fields are filled only for the `k8s` and
 `k8s-sandbox` executors, and only where the template left them empty —
 a profile that pins its own sandbox image or namespace keeps it. This
 lets a profile describe its isolation requirements while deployment
 configuration supplies the default cluster location and identity.
+`trace_emitter` follows the same rule, so a profile stays portable
+across clusters instead of naming a collector; one that sets its own
+emitter — a file, a different collector — keeps it.
 
 All other template values are preserved. Unlike `stirrup
 harness`'s CLI, there is no defaulting on the wire: `mode`,
@@ -213,6 +217,7 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | `-sandbox-namespace` | *(`-namespace`)* | Namespace sandbox Pods and their NetworkPolicies are created in. |
 | `-sandbox-service-account` | *(empty)* | ServiceAccount for sandbox Pods. Its token is never mounted. |
 | `-sandbox-runtime` | *(cluster default)* | `RuntimeClassName` for sandbox Pods: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`. |
+| `-harness-telemetry-endpoint` | *(empty)* | OTLP/gRPC `host:port`, resolved from the harness Pod, injected as a submitted RunConfig's `trace_emitter` where it names none. The harness exports the run's own trace there. |
 | `-telemetry` | `none` | OpenTelemetry exporter: `none`, `otlp`, or `stdout`. See [`docs/observability.md`](docs/observability.md). |
 | `-telemetry-protocol` | `$OTEL_EXPORTER_OTLP_PROTOCOL`, else `grpc` | OTLP transport: `grpc` or `http/protobuf`. |
 | `-telemetry-endpoint` | *(empty)* | OTLP endpoint URL, overriding `OTEL_EXPORTER_OTLP_ENDPOINT`. |
@@ -222,11 +227,15 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 
 The five `-telemetry-*` flags are inert unless `-telemetry` selects an
 exporter; endpoint, headers, and resource attributes otherwise come
-from the standard `OTEL_*` environment variables.
+from the standard `OTEL_*` environment variables. They cover hairpin's
+own signals only — `-harness-telemetry-endpoint` is independent of
+them, and of each other's collectors.
 
-The four `-sandbox-*` flags do not configure hairpin's own behaviour —
-they are the values it writes into each submitted RunConfig's executor.
-See [Profiles](#profiles).
+The four `-sandbox-*` flags and `-harness-telemetry-endpoint` do not
+configure hairpin's own behaviour — they are values it writes into each
+submitted RunConfig, into the executor and `trace_emitter`
+respectively, wherever the profile left them empty. See
+[Profiles](#profiles).
 
 `-launcher=none` disables harness launching entirely: jobs sit in
 `awaiting_harness` until something starts a harness out-of-band with

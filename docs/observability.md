@@ -12,10 +12,11 @@ the stirrup harness control plane, via
 hairpin's own job lifecycle — submission, launch, harness stream,
 outcome, latency, and the Billet-backed memory calls.
 
-A run's *own* traces are a separate matter: stirrup takes a trace
-emitter in its RunConfig, covering the agent loop inside the harness.
-Nothing here changes that, and hairpin does not propagate its trace
-context into the harness process.
+A run's *own* traces are a separate signal: stirrup takes a trace
+emitter in its RunConfig and exports the agent loop from inside the
+harness. Hairpin can name the collector for it (see [Run
+traces](#run-traces)) but records none of it and does not propagate its
+trace context into the harness process.
 
 ## Enabling export
 
@@ -27,6 +28,10 @@ context into the harness process.
 | `-telemetry-sample-ratio` | `1` | Head-sampling probability, 0 to 1, for traces hairpin starts. |
 | `-telemetry-service-name` | *(empty)* | `service.name`, overriding the `hairpin` default but not `OTEL_SERVICE_NAME`. |
 | `-telemetry-metric-interval` | `60s` | How often metrics are exported. |
+
+These configure hairpin's export of its own signals only. The
+collector a *run* exports to is named separately, by
+`-harness-telemetry-endpoint` — see [Run traces](#run-traces).
 
 Everything else is left to the environment variables the OpenTelemetry
 SDK already reads — `OTEL_EXPORTER_OTLP_ENDPOINT`,
@@ -52,6 +57,35 @@ Sampling is parent-based: a caller who arrives with a sampled
 `traceparent` is always followed, and the ratio applies only to traces
 hairpin starts itself. A busy deployment can lower the ratio without
 losing traces its callers already chose to sample.
+
+## Run traces
+
+Two endpoints are involved in a deployment that exports everything, and
+they are not interchangeable:
+
+| Flag | Exported by | Resolved from | Carries |
+|---|---|---|---|
+| `-telemetry-endpoint` | Hairpin's own SDK | Hairpin's Pod | The spans and metrics on this page. |
+| `-harness-telemetry-endpoint` | The stirrup harness | The harness Pod | One run's `run`/`turn`/`tool_call` span tree and `stirrup.harness.*` metrics. |
+
+`-harness-telemetry-endpoint` configures nothing in hairpin's own
+process: it is an OTLP/gRPC `host:port` written into each submitted
+RunConfig's `trace_emitter` as `{type: "otel", endpoint: <the flag>}`,
+in the same way the [`-sandbox-*`
+flags](deployment.md#sandbox-coordinates) fill in executor
+coordinates, and only where the profile left `trace_emitter` empty. A
+profile that names its own emitter — a `jsonl` file, a different
+collector, a managed gateway with credentials — keeps it. The protocol
+is left unset, so the harness applies its own default of gRPC.
+
+The split matters because the two endpoints are reached from different
+Pods and can differ: hairpin may export to a cluster-wide collector
+while runs export to one that keeps their traces separate. Pointing
+both at the same collector is fine, and is what
+[`examples/k8s/`](../examples/k8s/) does.
+
+Hairpin does not aggregate, read, or forward run traces. What a run
+emits, and the attributes on it, are stirrup's contract.
 
 ## Resource attributes
 
@@ -175,6 +209,9 @@ to see the instrumentation without running a collector:
 
 ## Not instrumented
 
+- **Run traces.** They go from the harness straight to the collector
+  `-harness-telemetry-endpoint` names; hairpin neither sees them nor
+  links them to its own spans.
 - **The web UI.** Its handlers produce no server spans, so a submit
   from the UI starts its own trace at `hairpin.submit` rather than
   under an HTTP span.
