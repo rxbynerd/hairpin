@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/controlplane"
 	"github.com/rxbynerd/hairpin/internal/launcher"
 	"github.com/rxbynerd/hairpin/internal/memory"
+	"github.com/rxbynerd/hairpin/internal/reaper"
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/service"
 	"github.com/rxbynerd/hairpin/internal/store"
@@ -67,6 +69,7 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	fs.StringVar(&cfg.Launcher, "launcher", "kubernetes", "harness launcher: kubernetes or none")
 	fs.StringVar(&cfg.ProfilesDir, "profiles", "", "directory of RunConfig profile templates (<name>.json)")
 	fs.StringVar(&cfg.DefaultProfile, "default-profile", "default", "profile used when a submit names none")
+	fs.DurationVar(&cfg.Retention, "retention", 0, "delete a terminal job's record, timeline, and permissions this long after it finishes (0: keep forever, the current default)")
 
 	fs.StringVar(&cfg.Harness.Namespace, "namespace", namespace, "namespace harness Jobs are created in")
 	fs.StringVar(&cfg.Harness.Image, "harness-image", config.DefaultHarnessImage, "stirrup harness image run as the Job")
@@ -237,6 +240,19 @@ func serve(cfg *config.Config) error {
 		rpcOpts = append(rpcOpts, connect.WithInterceptors(interceptor))
 	}
 
+	// The reaper always runs its awaiting_harness sweep, catching a
+	// harness that never dials back regardless of retention settings;
+	// its job-deletion sweep is a no-op unless cfg.Retention > 0.
+	rp := reaper.New(st, cfg.Retention, cfg.Harness.ActiveDeadlineSlack, logger)
+	reaperCtx, cancelReaper := context.WithCancel(context.Background())
+	defer cancelReaper()
+	var reaperWG sync.WaitGroup
+	reaperWG.Add(1)
+	go func() {
+		defer reaperWG.Done()
+		rp.Run(reaperCtx)
+	}()
+
 	mux := http.NewServeMux()
 	cpPath, cpHandler := cp.NewHTTPHandler(rpcOpts...)
 	mux.Handle(cpPath, cpHandler)
@@ -274,7 +290,7 @@ func serve(cfg *config.Config) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("hairpin serving", "listen", cfg.ListenAddr, "advertise", cfg.AdvertiseAddr, "launcher", cfg.Launcher)
+		logger.Info("hairpin serving", "listen", cfg.ListenAddr, "advertise", cfg.AdvertiseAddr, "launcher", cfg.Launcher, "retention", cfg.Retention)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
@@ -304,6 +320,8 @@ func serve(cfg *config.Config) error {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("shutdown grace expired with streams still open", "error", err)
 	}
+	cancelReaper()
+	reaperWG.Wait()
 	svc.WaitForLaunches()
 	cp.WaitForMemoryCalls()
 	return nil
