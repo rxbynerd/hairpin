@@ -62,6 +62,7 @@ const (
 // stream.
 const (
 	SessionAssigned          = "assigned"
+	SessionClosedBeforeReady = "closed_before_ready"
 	SessionNotReady          = "not_ready"
 	SessionNoID              = "no_session_id"
 	SessionUnknownJob        = "unknown_job"

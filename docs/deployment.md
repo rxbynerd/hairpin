@@ -309,6 +309,19 @@ investigation; poll `GetJob` or watch heartbeat events directly.
 Hairpin does not reconcile stale jobs automatically (see
 [issue #3](https://github.com/rxbynerd/hairpin/issues/3)).
 
+### Telemetry
+
+Traces and metrics are off unless `--telemetry` names an exporter. To
+export to a collector, add `--telemetry=otlp` and point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at it; `hairpin.yaml` already sets
+`POD_NAME` from the downward API, which becomes `service.instance.id`.
+The signals worth alerting on are `hairpin.job.completions` by status,
+`hairpin.harness.sessions` by disposition (a persistent `bad_token` or
+`unknown_job` rate means a workload is dialling a control plane it has
+no job on), and `hairpin.harness.sessions.active` against the number of
+harness Jobs the cluster shows as running. See
+[`docs/observability.md`](observability.md) for the full surface.
+
 ### Job retention
 
 Hairpin does not currently expire or delete job records, event

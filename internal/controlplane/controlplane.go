@@ -218,6 +218,7 @@ func (s *session) close() {
 func (h *Handler) runTask(ctx context.Context, s stream) error {
 	first, err := s.Receive()
 	if err != nil {
+		h.tel.HarnessSession(ctx, telemetry.SessionClosedBeforeReady)
 		h.log.Debug("harness stream closed before ready", "error", err)
 		return nil
 	}
