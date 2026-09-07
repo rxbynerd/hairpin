@@ -22,8 +22,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HAYBALE_DIR="${HAYBALE_DIR:-${HOME}/Developer/haybale}"
 IMAGE="localhost/haybale:dev"
 
-GITEA_USER="${HAIRPIN_GITEA_USER:-hairpin-dev}"
-GITEA_REPO="${HAIRPIN_GITEA_REPO:-e2e-repo}"
+# Fixed, not overridable: fake-provider-git.yaml's probe script and
+# examples/k8s/haybale.yaml's upstream credential both name these
+# values literally, so a different user or repo here produces a
+# bootstrap that looks fine and a smoke test that fails in the sandbox.
+GITEA_USER="hairpin-dev"
+GITEA_REPO="e2e-repo"
 GITEA_TOKEN_NAME="hairpin-dev-$(date +%s)"
 
 export KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
@@ -68,15 +72,17 @@ done
 curl -fsS http://localhost:3000/api/v1/version >/dev/null \
     || fail "gitea did not become reachable on http://localhost:3000"
 
-gitea_password="$(openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-
-# Fails harmlessly on a rerun (user already exists); the CLI's exact
-# arguments are per gitea's documented Docker-image bootstrap recipe as
-# of the pinned image tag in gitea.yaml — re-check against the image's
-# `gitea admin user create --help` if this ever drifts.
+# --random-password has gitea generate and print the password, so it
+# never appears in argv; nothing here needs it, since every API call
+# below authenticates with the access token instead. stdout is dropped
+# because that is where the generated password is printed. Fails
+# harmlessly on a rerun (the user already exists). The CLI's exact
+# arguments are per gitea's documented Docker-image bootstrap recipe
+# for the image tag pinned in gitea.yaml.
 "${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user create \
-    --username "${GITEA_USER}" --password "${gitea_password}" \
+    --username "${GITEA_USER}" --random-password \
     --email "${GITEA_USER}@example.com" --admin --must-change-password=false \
+    >/dev/null \
     || log "admin user create failed (may already exist); continuing"
 
 # --raw prints only the token, nothing else, for exactly this kind of
@@ -87,7 +93,9 @@ token="$("${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gite
     --scopes read:repository,write:repository --raw)"
 [ -n "${token}" ] || fail "gitea did not return an access token"
 
-curl -fsS -u "${GITEA_USER}:${gitea_password}" \
+# Token auth, not basic auth: the account's password differs between a
+# first run and a rerun, and the token was just minted for this one.
+curl -fsS -H "Authorization: token ${token}" \
     -H 'Content-Type: application/json' \
     -d "{\"name\": \"${GITEA_REPO}\", \"private\": false, \"auto_init\": true}" \
     http://localhost:3000/api/v1/user/repos >/dev/null \
@@ -119,6 +127,9 @@ log "recording the gitea token in the haybale-gitea-token Secret..."
 
 log "deploying the git-probe fake provider..."
 "${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/fake-provider-git.yaml"
+# The provider reads server.py once at start, so a changed ConfigMap
+# only takes effect on a fresh Pod.
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout restart deployment/fake-provider-git
 "${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/fake-provider-git --timeout=120s
 
 log "adding the git profile (repo: gitea/${GITEA_USER}/${GITEA_REPO})..."

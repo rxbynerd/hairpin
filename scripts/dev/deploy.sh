@@ -176,4 +176,13 @@ fi
 "${KUBECTL[@]}" -n hairpin rollout restart deployment/hairpin
 "${KUBECTL[@]}" -n hairpin rollout status deployment/hairpin --timeout=120s
 
+# haybale reads its jwksFile once at start, so a haybale left running
+# across a deploy rejects every token signed by the keypair generated
+# above. It is absent until scripts/dev/haybale.sh has run.
+if "${KUBECTL[@]}" -n hairpin get deployment haybale >/dev/null 2>&1; then
+    log "restarting haybale for the regenerated JWKS..."
+    "${KUBECTL[@]}" -n hairpin rollout restart deployment/haybale
+    "${KUBECTL[@]}" -n hairpin rollout status deployment/haybale --timeout=120s
+fi
+
 log "done. Next: scripts/dev/smoke-test.sh"

@@ -29,7 +29,10 @@ spec:
       # left at the image default rather than forced non-root.
       containers:
         - name: gitea
-          image: docker.io/gitea/gitea:1.23
+          # Pinned to a patch tag: haybale.sh depends on this image's
+          # `gitea admin user create` flags, which a minor tag can move
+          # under it.
+          image: docker.io/gitea/gitea:1.23.8
           env:
             - name: GITEA__security__INSTALL_LOCK
               value: "true"
