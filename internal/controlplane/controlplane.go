@@ -346,12 +346,24 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	defer h.tel.SessionClosed(ctx)
 
 	started := h.now()
-	if _, err := h.store.UpdateJob(ctx, jobID, func(j *job.Job) error {
+	_, err = h.store.UpdateJob(ctx, jobID, func(j *job.Job) error {
+		// The job may have settled since the pre-assignment check — a
+		// reaper deadline or a cancellation — and a terminal record must
+		// never be resurrected to running.
+		if j.Status.Terminal() {
+			return errNoUpdate
+		}
 		j.Status = job.StatusRunning
 		j.StartedAt = started
 		j.LastEventAt = started
 		return nil
-	}); err != nil {
+	})
+	if errors.Is(err, errNoUpdate) {
+		h.log.Info("job settled before the running transition; cancelling harness", "job_id", jobID)
+		h.sendCancel(s, jobID)
+		return nil
+	}
+	if err != nil {
 		h.log.Error("failed to mark job running", "job_id", jobID, "error", err)
 	}
 	h.appendStatus(ctx, jobID, job.StatusRunning, started)

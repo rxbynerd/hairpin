@@ -96,3 +96,27 @@ func TestMemStoreDeleteJobLeavesOthersIntact(t *testing.T) {
 		t.Fatalf("GetJob b mismatch: %+v", got)
 	}
 }
+
+func TestMemStoreDeleteJobEndsWatch(t *testing.T) {
+	m := NewMemStore(0)
+	t.Cleanup(func() { _ = m.Close() })
+	ctx := context.Background()
+	if err := m.CreateJob(ctx, newTestMemJob("hp-watch")); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	ch, err := m.WatchEvents(ctx, "hp-watch", "")
+	if err != nil {
+		t.Fatalf("WatchEvents: %v", err)
+	}
+	if err := m.DeleteJob(ctx, "hp-watch"); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("want closed channel after DeleteJob, got an event")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("watch channel not closed after DeleteJob")
+	}
+}
