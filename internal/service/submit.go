@@ -9,6 +9,7 @@ import (
 
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/job"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // SubmitParams is one task submission. Profile and RunConfigJSON are
@@ -24,9 +25,23 @@ type SubmitParams struct {
 // harness in the background. It returns once the job is durable: launch
 // failures surface as a transition to failed, not as an error here.
 func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) {
+	ctx, span := s.tel.Start(ctx, "hairpin.submit")
+	defer span.End()
+
+	// A profile name is recorded only once it has resolved: an unknown
+	// name is whatever the caller typed.
+	fail := func(profile, outcome string, err error) (*job.Job, error) {
+		s.tel.JobSubmitted(ctx, profile, outcome)
+		telemetry.Fail(span, err)
+		return nil, err
+	}
+
 	cfg, profile, err := s.resolveConfig(p)
 	if err != nil {
-		return nil, err
+		return fail("", telemetry.SubmissionRejected, err)
+	}
+	if profile != "" {
+		span.SetAttributes(telemetry.ProfileAttr(profile))
 	}
 
 	id := job.NewID()
@@ -36,15 +51,15 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 	}
 	applyExecutorDefaults(cfg, s.executorDefaults)
 	if err := validateRunConfig(cfg); err != nil {
-		return nil, err
+		return fail(profile, telemetry.SubmissionRejected, err)
 	}
 	if err := validateControlPlaneTools(cfg.GetTools().GetControlPlane(), s.memoryTools); err != nil {
-		return nil, err
+		return fail(profile, telemetry.SubmissionRejected, err)
 	}
 
 	runConfigJSON, err := protojson.Marshal(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("encode run config: %w", err)
+		return fail(profile, telemetry.SubmissionFailed, fmt.Errorf("encode run config: %w", err))
 	}
 
 	j := &job.Job{
@@ -55,10 +70,13 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 		RunConfigJSON: string(runConfigJSON),
 		CreatedAt:     time.Now().UTC(),
 		HarnessToken:  job.NewHarnessToken(),
+		TraceParent:   telemetry.TraceParent(ctx),
 	}
 	if err := s.store.CreateJob(ctx, j); err != nil {
-		return nil, err
+		return fail(profile, telemetry.SubmissionFailed, err)
 	}
+	telemetry.SetJobID(span, id)
+	s.tel.JobSubmitted(ctx, profile, telemetry.SubmissionAccepted)
 	s.appendStatusEvent(ctx, id, job.StatusQueued, "")
 
 	s.launches.Add(1)
@@ -136,15 +154,26 @@ func (s *Service) launch(j *job.Job) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.launchTimeout)
 	defer cancel()
 
+	// The launch outlives the submitting request, so it traces on its
+	// own and links back to the submission rather than extending it.
+	ctx, span := s.tel.Start(ctx, "hairpin.launch", telemetry.LinkToTraceParent(j.TraceParent))
+	defer span.End()
+	telemetry.SetJobID(span, j.ID)
+
 	if !s.transition(ctx, j.ID, job.StatusQueued, job.StatusLaunching, "") {
+		s.tel.JobLaunched(ctx, telemetry.LaunchSkipped, 0)
 		return
 	}
 
+	started := time.Now()
 	if err := s.launcher.Launch(ctx, j); err != nil {
+		s.tel.JobLaunched(ctx, telemetry.LaunchFailed, time.Since(started))
+		telemetry.Fail(span, err)
 		s.log.Error("launch harness", "job", j.ID, "err", err)
 		s.transition(ctx, j.ID, job.StatusLaunching, job.StatusFailed, err.Error())
 		return
 	}
+	s.tel.JobLaunched(ctx, telemetry.LaunchSucceeded, time.Since(started))
 	s.transition(ctx, j.ID, job.StatusLaunching, job.StatusAwaitingHarness, "")
 }
 
@@ -174,6 +203,10 @@ func (s *Service) transition(ctx context.Context, id string, from, to job.Status
 	}
 	if moved {
 		s.appendStatusEvent(ctx, id, to, errText)
+		if to.Terminal() {
+			// A job that never ran has no run duration to report.
+			s.tel.JobCompleted(ctx, to, "", 0)
+		}
 	}
 	return moved
 }

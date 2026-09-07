@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/launcher"
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/store"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // ErrInvalidArgument marks a caller mistake: a malformed RunConfig, an
@@ -52,6 +53,7 @@ type Service struct {
 	executorDefaults config.ExecutorDefaults
 	memoryTools      bool
 	log              *slog.Logger
+	tel              *telemetry.Recorder
 
 	launchTimeout time.Duration
 	launches      sync.WaitGroup
@@ -71,6 +73,12 @@ func WithExecutorDefaults(d config.ExecutorDefaults) Option {
 // Service needs no client of its own: the control plane owns the calls.
 func WithMemoryTools(enabled bool) Option {
 	return func(s *Service) { s.memoryTools = enabled }
+}
+
+// WithTelemetry records spans and metrics for caller-driven job
+// operations. A nil recorder records nothing.
+func WithTelemetry(rec *telemetry.Recorder) Option {
+	return func(s *Service) { s.tel = rec }
 }
 
 // New returns a Service. A nil logger discards output; a nil profiles
@@ -195,6 +203,7 @@ func (s *Service) cancelUnassigned(ctx context.Context, id string) (*job.Job, er
 	}
 	if cancelled {
 		s.appendStatusEvent(ctx, id, job.StatusCancelled, "")
+		s.tel.JobCompleted(ctx, job.StatusCancelled, "cancelled", 0)
 	}
 	return j, nil
 }
@@ -235,6 +244,7 @@ func (s *Service) AnswerPermission(ctx context.Context, jobID, requestID string,
 		Allowed:   &harnessv1.OptionalBool{Value: allow},
 		Reason:    reason,
 	})
+	s.tel.PermissionAnswered(ctx, allow, err == nil)
 	if err != nil {
 		if revertErr := s.store.PutPermission(ctx, jobID, p); revertErr != nil {
 			s.log.Error("failed to revert unanswered permission", "job", jobID, "request", requestID, "err", revertErr)

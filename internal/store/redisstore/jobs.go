@@ -34,6 +34,7 @@ func jobSetFields(j *job.Job) map[string]any {
 		"final_text":       j.FinalText,
 		"cancel_requested": boolField(j.CancelRequested),
 		"harness_token":    j.HarnessToken,
+		"trace_parent":     j.TraceParent,
 	}
 	if !j.CreatedAt.IsZero() {
 		f["created_at"] = j.CreatedAt.Format(time.RFC3339Nano)
@@ -88,6 +89,7 @@ func jobFromFields(fields map[string]string) (*job.Job, error) {
 		FinalText:       fields["final_text"],
 		CancelRequested: fields["cancel_requested"] == "1",
 		HarnessToken:    fields["harness_token"],
+		TraceParent:     fields["trace_parent"],
 	}
 	var err error
 	for name, dst := range map[string]*time.Time{
