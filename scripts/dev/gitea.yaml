@@ -1,8 +1,7 @@
 # Development-only in-cluster gitea: a stand-in git host that lets the
 # "git" profile prove haybale's static-credential upstream path end to
-# end while GitHub App credentials remain unavailable (see TODO.md Wave
-# 6). SQLite, emptyDir storage — a restart loses all history, and that's
-# fine here.
+# end without GitHub App credentials. SQLite, emptyDir storage; a
+# restart loses all history, and that's fine here.
 #
 # Pulled directly from the public registry rather than built+loaded,
 # same as scripts/dev/fake-provider.yaml's python image: gitea ships no

@@ -69,15 +69,13 @@ data:
   # "gitea" is the routing key haybale.yaml's upstream is keyed on, not
   # a real DNS name — see docs/deployment.md#deploying-haybale.
   #
-  # network.mode "none" is a dev-cluster fallback, not the intended
-  # posture: it installs a genuine deny-all NetworkPolicy for the
-  # sandbox Pod (stirrup's k8s executor), so it only reaches haybale on
-  # a CNI that does not enforce NetworkPolicy (e.g. kind's default
-  # kindnet). A NetworkPolicy-enforcing cluster needs "allowlist" mode
-  # plus stirrup's own egress-proxy Deployment
-  # (stirrup's examples/k8s/egress-proxy/) reachable from the sandbox
-  # namespace, with haybale's host:port in its allowlist — see TODO.md
-  # Wave 6 for why that is not wired up here.
+  # network.mode "none" installs a deny-all NetworkPolicy for the
+  # sandbox Pod, so on any CNI that enforces NetworkPolicy (current kind
+  # releases included) the sandbox cannot reach haybale. Reaching it
+  # needs "allowlist" mode plus stirrup's egress-proxy Deployment
+  # (stirrup's examples/k8s/egress-proxy/) in the sandbox namespace with
+  # haybale's host:port in its allowlist; see
+  # examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one.
   git.json: |
     {
       "mode": "execution",
@@ -87,7 +85,7 @@ data:
       },
       "modelRouter": {
         "type": "static",
-        "model": "claude-sonnet-4-6-20250514"
+        "model": "claude-sonnet-4-6"
       },
       "executor": {
         "type": "k8s",

@@ -16,6 +16,7 @@ set -euo pipefail
 
 NAMESPACE="${HAIRPIN_NAMESPACE:-hairpin}"
 CLUSTER_NAME="${HAIRPIN_CLUSTER_NAME:-hairpin}"
+KUBE_CONTEXT="${HAIRPIN_KUBE_CONTEXT:-kind-${CLUSTER_NAME}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HAYBALE_DIR="${HAYBALE_DIR:-${HOME}/Developer/haybale}"
@@ -31,9 +32,12 @@ ENGINE="${HAIRPIN_CONTAINER_ENGINE:-podman}"
 log()  { printf '[haybale] %s\n' "$*"; }
 fail() { printf '[haybale] ERROR: %s\n' "$*" >&2; exit 1; }
 
+# Pinned so the manifests replace state in the development cluster only.
+KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
+
 "${ENGINE}" container exists "${CLUSTER_NAME}-control-plane" 2>/dev/null \
     || fail "cluster '${CLUSTER_NAME}' does not exist; run scripts/dev/kind-up.sh"
-kubectl -n "${NAMESPACE}" get deployment hairpin >/dev/null 2>&1 \
+"${KUBECTL[@]}" -n "${NAMESPACE}" get deployment hairpin >/dev/null 2>&1 \
     || fail "hairpin is not deployed in namespace '${NAMESPACE}'; run scripts/dev/deploy.sh first"
 [ -d "${HAYBALE_DIR}" ] \
     || fail "no haybale checkout at ${HAYBALE_DIR}; set HAYBALE_DIR to override"
@@ -49,11 +53,11 @@ log "loading ${IMAGE} into the cluster..."
 kind load image-archive "${archive}" --name "${CLUSTER_NAME}"
 
 log "deploying gitea..."
-kubectl apply -f "${SCRIPT_DIR}/gitea.yaml"
-kubectl -n "${NAMESPACE}" rollout status deployment/gitea --timeout=180s
+"${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/gitea.yaml"
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/gitea --timeout=180s
 
 log "bootstrapping gitea (admin user, access token, seed repo)..."
-kubectl -n "${NAMESPACE}" port-forward svc/gitea 3000:3000 >/dev/null 2>&1 &
+"${KUBECTL[@]}" -n "${NAMESPACE}" port-forward svc/gitea 3000:3000 >/dev/null 2>&1 &
 gitea_forward_pid=$!
 trap 'kill "${gitea_forward_pid}" 2>/dev/null || true; rm -f "${archive}"' EXIT
 
@@ -70,7 +74,7 @@ gitea_password="$(openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | o
 # arguments are per gitea's documented Docker-image bootstrap recipe as
 # of the pinned image tag in gitea.yaml — re-check against the image's
 # `gitea admin user create --help` if this ever drifts.
-kubectl -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user create \
+"${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user create \
     --username "${GITEA_USER}" --password "${gitea_password}" \
     --email "${GITEA_USER}@example.com" --admin --must-change-password=false \
     || log "admin user create failed (may already exist); continuing"
@@ -78,7 +82,7 @@ kubectl -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user crea
 # --raw prints only the token, nothing else, for exactly this kind of
 # scripted consumption; a unique --token-name per run sidesteps gitea's
 # "token name already used" rejection on a rerun.
-token="$(kubectl -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user generate-access-token \
+token="$("${KUBECTL[@]}" -n "${NAMESPACE}" exec deploy/gitea -- su-exec git gitea admin user generate-access-token \
     --username "${GITEA_USER}" --token-name "${GITEA_TOKEN_NAME}" \
     --scopes read:repository,write:repository --raw)"
 [ -n "${token}" ] || fail "gitea did not return an access token"
@@ -93,29 +97,29 @@ kill "${gitea_forward_pid}" 2>/dev/null || true
 trap 'rm -f "${archive}"' EXIT
 
 log "deploying haybale..."
-kubectl apply -f "${REPO_ROOT}/examples/k8s/haybale.yaml"
+"${KUBECTL[@]}" apply -f "${REPO_ROOT}/examples/k8s/haybale.yaml"
 
 # haybale.yaml bundles its own placeholder haybale-gitea-token Secret
 # (REPLACE_ME) so `kubectl apply -f examples/k8s/` has something to
 # mount outside this script; applying it here would clobber the real
 # token, so the real one is written after, not before.
 log "recording the gitea token in the haybale-gitea-token Secret..."
-kubectl -n "${NAMESPACE}" create secret generic haybale-gitea-token \
+"${KUBECTL[@]}" -n "${NAMESPACE}" create secret generic haybale-gitea-token \
     --from-literal=HAYBALE_GITEA_TOKEN="${token}" \
-    --dry-run=client -o yaml | kubectl apply -f -
+    --dry-run=client -o yaml | "${KUBECTL[@]}" apply -f -
 
-kubectl -n "${NAMESPACE}" set image deployment/haybale "haybale=${IMAGE}"
-kubectl -n "${NAMESPACE}" patch deployment haybale --type=json \
+"${KUBECTL[@]}" -n "${NAMESPACE}" set image deployment/haybale "haybale=${IMAGE}"
+"${KUBECTL[@]}" -n "${NAMESPACE}" patch deployment haybale --type=json \
     -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]' \
     2>/dev/null \
-  || kubectl -n "${NAMESPACE}" patch deployment haybale --type=json \
+  || "${KUBECTL[@]}" -n "${NAMESPACE}" patch deployment haybale --type=json \
     -p '[{"op":"add","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
-kubectl -n "${NAMESPACE}" rollout restart deployment/haybale
-kubectl -n "${NAMESPACE}" rollout status deployment/haybale --timeout=180s
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout restart deployment/haybale
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/haybale --timeout=180s
 
 log "deploying the git-probe fake provider..."
-kubectl apply -f "${SCRIPT_DIR}/fake-provider-git.yaml"
-kubectl -n "${NAMESPACE}" rollout status deployment/fake-provider-git --timeout=120s
+"${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/fake-provider-git.yaml"
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/fake-provider-git --timeout=120s
 
 log "adding the git profile (repo: gitea/${GITEA_USER}/${GITEA_REPO})..."
 profile="$(python3 - <<'EOF'
@@ -140,11 +144,11 @@ print(json.dumps({"data": {"git.json": json.dumps({
 }, indent=2)}}))
 EOF
 )"
-kubectl -n "${NAMESPACE}" patch configmap hairpin-profiles --type=merge -p "${profile}"
+"${KUBECTL[@]}" -n "${NAMESPACE}" patch configmap hairpin-profiles --type=merge -p "${profile}"
 
 # Profiles are loaded once at startup, so a restart is required.
 log "restarting hairpin..."
-kubectl -n "${NAMESPACE}" rollout restart deployment/hairpin
-kubectl -n "${NAMESPACE}" rollout status deployment/hairpin --timeout=120s
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout restart deployment/hairpin
+"${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/hairpin --timeout=120s
 
 log "done. Next: scripts/dev/git-smoke-test.sh (or submit with {\"profile\": \"git\", \"repoScope\": [\"gitea/${GITEA_USER}/${GITEA_REPO}\"], \"prompt\": \"...\"})"

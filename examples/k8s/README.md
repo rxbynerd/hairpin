@@ -168,10 +168,8 @@ path.
 
 2. Point `haybale.yaml`'s upstream at a real git host and real
    credentials. It ships wired to a dev-only in-cluster gitea using a
-   static token (see `scripts/dev/gitea.yaml`) because GitHub App
-   credentials are not available yet (blocked — see
-   [`TODO.md`](../../TODO.md) Wave 6); the file has a commented
-   `github-app` upstream block ready for when they are.
+   static token (see `scripts/dev/gitea.yaml`); the file has a
+   commented `github-app` upstream block ready for a real GitHub App.
 
 3. Narrow `haybale.yaml`'s `haybale-policy` ConfigMap from the shipped
    `hp-*` ceiling to the identities and repos your deployment actually
@@ -216,8 +214,8 @@ there too and `git-smoke-test` cannot pass. Any cluster running the
 `git` profile — the kind dev loop included — needs `allowlist` mode
 plus stirrup's `examples/k8s/egress-proxy/` manifests deployed
 alongside the sandbox namespace, with haybale's `host:port` in its
-allowlist — tracked as a follow-up in `TODO.md` Wave 6 rather than
-built here.
+allowlist. That deployment is tracked in [`TODO.md`](../../TODO.md)
+rather than built here.
 
 ## Trust posture
 

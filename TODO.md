@@ -13,7 +13,9 @@ is tracked in GitHub rather than as a session log:
 ## Protocol coverage
 
 - [Reject unsupported RunConfig capabilities during submission](https://github.com/rxbynerd/hairpin/issues/1) instead of allowing a job to reach a protocol request Hairpin cannot answer.
-- Add sandbox identity token issuance, including audience validation, key rotation/JWKS publication, short-lived per-run claims, and policy-scoped identities.
+- Reach haybale from a sandbox on a NetworkPolicy-enforcing CNI: deploy stirrup's `examples/k8s/egress-proxy/` into the sandbox namespace and switch the `git` profile to `allowlist` mode, or add an in-cluster-services network mode to stirrup. Until then `git-smoke-test` cannot pass on kind (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one)).
+- Point haybale at a GitHub App upstream instead of the development gitea, and narrow `haybale-policy` from the `hp-*` ceiling to per-caller rules.
+- Rotate the sandbox-token signing key without a haybale restart; haybale reads the JWKS file once at startup.
 - Add follow-up turns and batch execution only with end-to-end lifecycle and cancellation semantics. Asynchronous tool results are answered for the two memory tools only.
 - [Reconcile permission state after harness-side timeouts](https://github.com/rxbynerd/hairpin/issues/2) so a late API response cannot appear effective after the harness has moved on.
 

@@ -9,10 +9,10 @@
 # the kind development loop. Replace `image:` below once a registry
 # image is published.
 #
-# The upstream wired in here is gitea (see scripts/dev/gitea.yaml and
-# TODO.md Wave 6): GitHub App credentials are not available yet, so this
-# is the only upstream that proves the token flow end to end today. The
-# commented block below is the upstream to add once they exist.
+# The upstream wired in here is the development gitea from
+# scripts/dev/gitea.yaml, reached through a static credential. The
+# commented block below is the GitHub App upstream to swap in for a
+# real deployment; see docs/deployment.md#deploying-haybale.
 #
 # haybale-jwks (ConfigMap, referenced but not defined here) and
 # haybale-gitea-token's real value are generated, not applied statically
@@ -58,10 +58,10 @@ data:
           username: hairpin-dev
           tokenEnv: HAYBALE_GITEA_TOKEN
 
-      # Swap the upstream above for this once a GitHub App exists
-      # (blocked — see TODO.md Wave 6): it mints a fresh, per-repo,
-      # per-verb installation token for every request instead of one
-      # static credential good for everything the policy allows.
+      # Swap the upstream above for this once a GitHub App exists: it
+      # mints a fresh, per-repo, per-verb installation token for every
+      # request instead of one static credential good for everything
+      # the policy allows.
       # - host: github.com
       #   baseURL: https://github.com
       #   credential:

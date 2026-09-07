@@ -10,6 +10,8 @@
 set -euo pipefail
 
 NAMESPACE="${HAIRPIN_NAMESPACE:-hairpin}"
+CLUSTER_NAME="${HAIRPIN_CLUSTER_NAME:-hairpin}"
+KUBE_CONTEXT="${HAIRPIN_KUBE_CONTEXT:-kind-${CLUSTER_NAME}}"
 PORT="${HAIRPIN_PORT:-8130}"
 GITEA_PORT="${HAIRPIN_GITEA_PORT:-3000}"
 BASE="http://localhost:${PORT}"
@@ -20,9 +22,13 @@ GITEA_REPO="${HAIRPIN_GITEA_REPO:-e2e-repo}"
 log()  { printf '[git-smoke] %s\n' "$*"; }
 fail() { printf '[git-smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 
-kubectl -n "${NAMESPACE}" port-forward "svc/hairpin" "${PORT}:8130" >/dev/null 2>&1 &
+# Pinned so the probe cannot be answered by whichever cluster the shell
+# last selected.
+KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
+
+"${KUBECTL[@]}" -n "${NAMESPACE}" port-forward "svc/hairpin" "${PORT}:8130" >/dev/null 2>&1 &
 hairpin_forward_pid=$!
-kubectl -n "${NAMESPACE}" port-forward "svc/gitea" "${GITEA_PORT}:3000" >/dev/null 2>&1 &
+"${KUBECTL[@]}" -n "${NAMESPACE}" port-forward "svc/gitea" "${GITEA_PORT}:3000" >/dev/null 2>&1 &
 gitea_forward_pid=$!
 trap 'kill "${hairpin_forward_pid}" "${gitea_forward_pid}" 2>/dev/null || true' EXIT
 
