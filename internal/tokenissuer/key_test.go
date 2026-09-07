@@ -13,9 +13,9 @@ import (
 )
 
 func TestParsePrivateKeyPEM(t *testing.T) {
-	p256SEC1 := mustPEM(t, mustP256(t), "EC PRIVATE KEY", false)
-	p256PKCS8 := mustPEM(t, mustP256(t), "PRIVATE KEY", true)
-	p384PKCS8 := mustPEM(t, mustCurveKey(t, elliptic.P384()), "PRIVATE KEY", true)
+	p256SEC1 := mustPEM(t, mustP256(t), false)
+	p256PKCS8 := mustPEM(t, mustP256(t), true)
+	p384PKCS8 := mustPEM(t, mustCurveKey(t, elliptic.P384()), true)
 
 	cases := []struct {
 		name    string
@@ -54,7 +54,7 @@ func TestParsePrivateKeyPEM(t *testing.T) {
 func TestLoadKey(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(path, mustPEM(t, mustP256(t), "PRIVATE KEY", true), 0o600); err != nil {
+	if err := os.WriteFile(path, mustPEM(t, mustP256(t), true), 0o600); err != nil {
 		t.Fatalf("write key: %v", err)
 	}
 
@@ -115,16 +115,16 @@ func mustCurveKey(t *testing.T, curve elliptic.Curve) *ecdsa.PrivateKey {
 	return key
 }
 
-// mustPEM encodes key as either a SEC1 "EC PRIVATE KEY" or PKCS#8
-// "PRIVATE KEY" PEM block.
-func mustPEM(t *testing.T, key *ecdsa.PrivateKey, blockType string, pkcs8 bool) []byte {
+// mustPEM encodes key as either a PKCS#8 "PRIVATE KEY" or SEC1
+// "EC PRIVATE KEY" PEM block. The label follows the encoding, so a
+// fixture cannot be mislabelled.
+func mustPEM(t *testing.T, key *ecdsa.PrivateKey, pkcs8 bool) []byte {
 	t.Helper()
-	var der []byte
-	var err error
+	blockType := "EC PRIVATE KEY"
+	der, err := x509.MarshalECPrivateKey(key)
 	if pkcs8 {
+		blockType = "PRIVATE KEY"
 		der, err = x509.MarshalPKCS8PrivateKey(key)
-	} else {
-		der, err = x509.MarshalECPrivateKey(key)
 	}
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)
