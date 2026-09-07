@@ -74,6 +74,8 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	fs.StringVar(&cfg.Sandbox.ServiceAccount, "sandbox-service-account", "", "ServiceAccount for sandbox Pods; its token is never mounted")
 	fs.StringVar(&cfg.Sandbox.Runtime, "sandbox-runtime", "", "RuntimeClassName for sandbox Pods: runc, gvisor, kata-qemu, kata-fc, kata-clh (empty: cluster default)")
 
+	fs.StringVar(&cfg.HarnessTelemetryEndpoint, "harness-telemetry-endpoint", "", "OTLP/gRPC host:port injected as a submitted RunConfig's trace_emitter when it names none (empty: leave it alone); the harness exports the run's own trace there")
+
 	fs.StringVar(&cfg.Telemetry.Exporter, "telemetry", telemetry.ExporterNone, "OpenTelemetry exporter: none, otlp, or stdout")
 	fs.StringVar(&cfg.Telemetry.Protocol, "telemetry-protocol", envOr("OTEL_EXPORTER_OTLP_PROTOCOL", telemetry.ProtocolGRPC), "OTLP transport: grpc or http/protobuf")
 	fs.StringVar(&cfg.Telemetry.Endpoint, "telemetry-endpoint", "", "OTLP endpoint URL (empty: OTEL_EXPORTER_OTLP_ENDPOINT, then localhost)")
@@ -178,6 +180,7 @@ func serve(cfg *config.Config) error {
 	reg := registry.New()
 	svc := service.New(st, reg, l, profiles, logger,
 		service.WithExecutorDefaults(cfg.Sandbox),
+		service.WithHarnessTelemetryEndpoint(cfg.HarnessTelemetryEndpoint),
 		service.WithMemoryTools(memoryClient != nil),
 		service.WithTelemetry(tel))
 
