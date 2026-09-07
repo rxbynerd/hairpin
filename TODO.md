@@ -28,7 +28,10 @@ Memory ([`docs/memory.md`](docs/memory.md)) depends on two upstream changes that
 ## Security and observability
 
 - [Add authentication, authorization, and transport security](https://github.com/rxbynerd/hairpin/issues/5) for the API, UI, and harness control plane.
-- [Add OpenTelemetry instrumentation](https://github.com/rxbynerd/hairpin/issues/6) for submit, launch, stream lifecycle, outcomes, and latency.
+- Instrument the web UI's HTTP handlers, and the Redis and Kubernetes
+  clients, so store and launcher latency is more than the enclosing
+  span's duration. Service traces and metrics themselves are built
+  ([`docs/observability.md`](docs/observability.md)).
 
 Current operational constraints and unsupported protocol events are
 documented in [`docs/design.md`](docs/design.md#current-limitations),

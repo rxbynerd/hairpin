@@ -41,6 +41,16 @@ spec:
             - --sandbox-namespace=hairpin-sandboxes
             - --sandbox-service-account=stirrup-sandbox
             - --billet-addr=billet.hairpin.svc:8141
+            # Add --telemetry=otlp, and an OTEL_EXPORTER_OTLP_ENDPOINT
+            # below, to export traces and metrics to a collector.
+            # See docs/observability.md.
+          env:
+            # service.instance.id in exported telemetry; ignored when
+            # export is off.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           ports:
             - containerPort: 8130
               name: h2c

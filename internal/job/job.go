@@ -68,6 +68,12 @@ type Job struct {
 	// harness connected, so the control plane cancels instead of
 	// assigning.
 	CancelRequested bool
+	// TraceParent is the W3C trace context of the submission that
+	// created this job, when tracing was enabled. The control plane
+	// links a harness stream's span back to it; it is never trusted as
+	// an inbound trace parent, and is empty for jobs submitted with
+	// tracing off.
+	TraceParent string
 	// HarnessToken is the per-job bearer secret a harness must present
 	// (inside CONTROL_PLANE_SESSION_ID, echoed back in ready.id) to
 	// claim this job's stream. Never exposed on the Job API surface.

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // DefaultHarnessImage and DefaultSandboxImage are the published stirrup
@@ -67,6 +69,10 @@ type Config struct {
 	// Sandbox supplies the cluster coordinates a submitted RunConfig's
 	// Kubernetes executor inherits when it does not name its own.
 	Sandbox ExecutorDefaults
+
+	// Telemetry configures OpenTelemetry export. Its zero value exports
+	// nothing.
+	Telemetry telemetry.Options
 }
 
 // HarnessConfig configures the batch/v1 Job hairpin creates per run.
@@ -154,6 +160,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Harness.ActiveDeadlineSlack < 0 {
 		return fmt.Errorf("deadline slack must be non-negative")
+	}
+	if err := c.Telemetry.Validate(); err != nil {
+		return err
 	}
 	switch c.Sandbox.Runtime {
 	case "", "runc", "gvisor", "kata-qemu", "kata-fc", "kata-clh":

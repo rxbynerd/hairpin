@@ -14,6 +14,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/job"
 	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/store"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // pump drains one assigned harness stream into the store. All state is
@@ -24,6 +25,10 @@ type eventPump struct {
 	ctx   context.Context
 	jobID string
 	sess  *session
+
+	// startedAt is when the task assignment landed, the origin of the
+	// run duration reported at a terminal event.
+	startedAt time.Time
 
 	finalText  strings.Builder
 	errMessage string
@@ -55,6 +60,7 @@ func (h *Handler) pump(ctx context.Context, jobID string, sess *session, declare
 		ctx:            context.WithoutCancel(ctx),
 		jobID:          jobID,
 		sess:           sess,
+		startedAt:      now,
 		lastEventAt:    now,
 		lastEventFlush: now,
 		declaredTools:  declaredTools,
@@ -91,6 +97,7 @@ func (p *eventPump) run() error {
 func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 	now := p.h.now()
 	p.lastEventAt = now
+	p.h.tel.HarnessEvent(p.ctx, ev.GetType())
 
 	switch ev.GetType() {
 	case evTextDelta:
@@ -211,6 +218,7 @@ func (p *eventPump) putPermission(ev *harnessv1.HarnessEvent, at time.Time) {
 		return
 	}
 	p.permissionsSeen++
+	p.h.tel.PermissionRequested(p.ctx)
 	req := store.PermissionRequest{
 		RequestID:   ev.GetRequestId(),
 		ToolName:    ev.GetToolName(),
@@ -254,6 +262,7 @@ func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 		return
 	}
 	if refusal, ok := p.admitMemoryCall(tool, requestID); !ok {
+		p.h.tel.MemoryCall(p.ctx, tool, telemetry.MemoryRefused, 0)
 		p.sendToolResult(requestID, refusal, true)
 		return
 	}
@@ -274,10 +283,23 @@ func (p *eventPump) fulfilToolResult(ev *harnessv1.HarnessEvent) {
 			}
 		}()
 
-		ctx, cancel := context.WithTimeout(p.ctx, memory.CallTimeout)
+		ctx, span := p.h.tel.Start(p.ctx, "hairpin.memory.call")
+		defer span.End()
+		span.SetAttributes(telemetry.MemoryToolAttr(tool))
+		telemetry.SetJobID(span, p.jobID)
+		telemetry.SetRequestID(span, requestID)
+
+		ctx, cancel := context.WithTimeout(ctx, memory.CallTimeout)
 		defer cancel()
+		started := p.h.now()
 		content, isError, detail := memory.Fulfil(ctx, p.h.memory, tool, input)
+		outcome := telemetry.MemoryOK
+		if isError {
+			outcome = telemetry.MemoryError
+		}
+		p.h.tel.MemoryCall(ctx, tool, outcome, p.h.now().Sub(started))
 		if detail != nil {
+			telemetry.Fail(span, detail)
 			p.h.log.Error("memory tool call failed",
 				"job_id", p.jobID, "tool", tool, "request_id", requestID, "error", detail)
 		}
@@ -384,6 +406,7 @@ func (p *eventPump) finish(ev *harnessv1.HarnessEvent, at time.Time) {
 	}
 	p.appendProto(ev, at)
 	p.h.appendStatus(p.ctx, p.jobID, status, at)
+	p.h.tel.JobCompleted(p.ctx, status, stopReason, at.Sub(p.startedAt))
 	p.h.log.Info("harness run finished",
 		"job_id", p.jobID, "status", string(status), "stop_reason", stopReason)
 }
@@ -425,6 +448,17 @@ func (p *eventPump) closeUnfinished(ctx context.Context) {
 		return
 	}
 	p.h.appendStatus(ctx, p.jobID, status, at)
+	p.h.tel.JobCompleted(ctx, status, stopReasonFor(status), at.Sub(p.startedAt))
+}
+
+// stopReasonFor labels a run that ended without a done event: a
+// cancellation explains itself, anything else has no stop reason to
+// report.
+func stopReasonFor(status job.Status) string {
+	if status == job.StatusCancelled {
+		return "cancelled"
+	}
+	return ""
 }
 
 // isStreamEnd distinguishes an orderly stream end from a transport

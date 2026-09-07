@@ -213,6 +213,16 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | `-sandbox-namespace` | *(`-namespace`)* | Namespace sandbox Pods and their NetworkPolicies are created in. |
 | `-sandbox-service-account` | *(empty)* | ServiceAccount for sandbox Pods. Its token is never mounted. |
 | `-sandbox-runtime` | *(cluster default)* | `RuntimeClassName` for sandbox Pods: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`. |
+| `-telemetry` | `none` | OpenTelemetry exporter: `none`, `otlp`, or `stdout`. See [`docs/observability.md`](docs/observability.md). |
+| `-telemetry-protocol` | `$OTEL_EXPORTER_OTLP_PROTOCOL`, else `grpc` | OTLP transport: `grpc` or `http/protobuf`. |
+| `-telemetry-endpoint` | *(empty)* | OTLP endpoint URL, overriding `OTEL_EXPORTER_OTLP_ENDPOINT`. |
+| `-telemetry-sample-ratio` | `1` | Head-sampling probability, 0 to 1, for traces hairpin starts. |
+| `-telemetry-service-name` | *(empty)* | `service.name`, overriding the `hairpin` default but not `OTEL_SERVICE_NAME`. |
+| `-telemetry-metric-interval` | `60s` | How often metrics are exported. |
+
+The five `-telemetry-*` flags are inert unless `-telemetry` selects an
+exporter; endpoint, headers, and resource attributes otherwise come
+from the standard `OTEL_*` environment variables.
 
 The four `-sandbox-*` flags do not configure hairpin's own behaviour —
 they are the values it writes into each submitted RunConfig's executor.
@@ -279,6 +289,7 @@ Within that trusted-network posture, hairpin includes these controls:
 | `JobService` RPC reference, event types, permission flow, watch/resume semantics | [`docs/api.md`](docs/api.md) |
 | Kubernetes deployment recipe, Redis guidance, operational notes | [`docs/deployment.md`](docs/deployment.md) |
 | Shared memory: the Billet-backed tools, submit and run-time checks, limits, trust posture | [`docs/memory.md`](docs/memory.md) |
+| OpenTelemetry export: configuration, spans, metrics, correlation, cardinality | [`docs/observability.md`](docs/observability.md) |
 | Reference Kubernetes manifests | [`examples/k8s/`](examples/k8s/) |
 | Current limitations and roadmap | [`TODO.md`](TODO.md) |
 

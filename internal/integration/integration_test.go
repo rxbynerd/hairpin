@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	hairpinv1 "github.com/rxbynerd/hairpin/gen/hairpin/v1"
 	"github.com/rxbynerd/hairpin/gen/hairpin/v1/hairpinv1connect"
@@ -26,6 +27,8 @@ import (
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/service"
 	"github.com/rxbynerd/hairpin/internal/store"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
+	"github.com/rxbynerd/hairpin/internal/telemetry/telemetrytest"
 	"github.com/rxbynerd/hairpin/internal/web"
 )
 
@@ -44,18 +47,48 @@ const testRunConfig = `{
 // h2c port.
 func startServer(t *testing.T) (baseURL string, httpClient *http.Client) {
 	t.Helper()
+	return startServerWith(t, nil, nil)
+}
+
+// startInstrumentedServer is startServer with telemetry wired exactly
+// as cmd/hairpin wires it, plus the collector that reads back what the
+// loop measured.
+func startInstrumentedServer(t *testing.T) (string, *http.Client, *telemetrytest.Collector) {
+	t.Helper()
+	rec, collector := telemetrytest.New(t)
+	baseURL, client := startServerWith(t, rec, collector)
+	return baseURL, client, collector
+}
+
+// startServerWith builds the stack around an optional recorder. The
+// collector supplies the providers cmd/hairpin installs globally.
+func startServerWith(t *testing.T, rec *telemetry.Recorder, collector *telemetrytest.Collector) (string, *http.Client) {
+	t.Helper()
 	st := store.NewMemStore(0)
 	reg := registry.New()
 	profiles, err := service.NewProfiles(nil, "default")
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(st, reg, launcher.None{}, profiles, nil)
+	svc := service.New(st, reg, launcher.None{}, profiles, nil, service.WithTelemetry(rec))
+
+	var rpcOpts []connect.HandlerOption
+	if rec != nil {
+		interceptor, err := otelconnect.NewInterceptor(
+			otelconnect.WithoutTraceEvents(),
+			otelconnect.WithTracerProvider(collector.TracerProvider()),
+			otelconnect.WithMeterProvider(collector.MeterProvider()),
+		)
+		if err != nil {
+			t.Fatalf("otelconnect.NewInterceptor: %v", err)
+		}
+		rpcOpts = append(rpcOpts, connect.WithInterceptors(interceptor))
+	}
 
 	mux := http.NewServeMux()
-	cpPath, cpHandler := controlplane.New(st, reg).NewHTTPHandler()
+	cpPath, cpHandler := controlplane.New(st, reg, controlplane.WithTelemetry(rec)).NewHTTPHandler(rpcOpts...)
 	mux.Handle(cpPath, cpHandler)
-	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc))
+	apiPath, apiHandler := hairpinv1connect.NewJobServiceHandler(api.New(svc), rpcOpts...)
 	mux.Handle(apiPath, apiHandler)
 	mux.Handle("/", web.New(svc, nil))
 

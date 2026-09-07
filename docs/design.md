@@ -69,7 +69,8 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
 | `internal/api` | connect-go handler for `hairpin.v1.JobService`, a thin shim over `internal/service`. |
 | `internal/launcher` | `Launcher` interface; a client-go `batch/v1` Job impl and `None` for harnesses started out-of-band. |
 | `internal/web` | Embedded html/template UI: job list, submit form, job detail with SSE live event feed, approve/deny buttons. |
-| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, profiles dir, harness Job settings, and the sandbox coordinates submitted RunConfigs inherit. |
+| `internal/telemetry` | OpenTelemetry pipeline (OTLP or stdout, off by default) and the recorder for hairpin's own spans and metrics; owns metric-attribute cardinality. |
+| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, profiles dir, harness Job settings, telemetry export, and the sandbox coordinates submitted RunConfigs inherit. |
 | `cmd/hairpin` | `hairpin serve`; wires everything onto one h2c listener. |
 
 Both proto services are served by connect-go on a single h2c port, so

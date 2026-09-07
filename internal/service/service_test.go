@@ -80,7 +80,7 @@ type fixture struct {
 	launcher *fakeLauncher
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, opts ...Option) *fixture {
 	t.Helper()
 	profiles, err := NewProfiles(map[string]*harnessv1.RunConfig{"default": testTemplate()}, "default")
 	if err != nil {
@@ -91,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	reg := registry.New()
 	l := &fakeLauncher{}
 	return &fixture{
-		svc:      New(st, reg, l, profiles, slog.New(slog.DiscardHandler)),
+		svc:      New(st, reg, l, profiles, slog.New(slog.DiscardHandler), opts...),
 		store:    st,
 		registry: reg,
 		launcher: l,
