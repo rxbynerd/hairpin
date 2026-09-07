@@ -25,7 +25,7 @@ and what the harness's RBAC is for, is in
 | `hairpin.yaml` | Deployment + Service | hairpin itself, including the `--sandbox-token-*` flags that make it a JWT issuer for haybale. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `--harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
 | `sandbox-token.yaml` | Secret + ConfigMap | The signing keypair hairpin and haybale share: `key.pem` (hairpin, private) and `jwks.json` (haybale, public), generated together by `hairpin keygen`. Both are non-functional placeholders — see [Deploying haybale](#deploying-haybale). |
-| `haybale.yaml` | ConfigMap ×2 + Secret + Deployment + Service | haybale, wired to a dev-only in-cluster gitea upstream until GitHub App credentials are configured — see [Deploying haybale](#deploying-haybale). |
+| `haybale.yaml` | ConfigMap ×2 + Secret + ServiceAccount + Deployment + Service + NetworkPolicy | haybale, wired to a dev-only in-cluster gitea upstream until GitHub App credentials are configured. The NetworkPolicy admits the sandbox namespace only, since sandbox Pods are haybale's only client — see [Deploying haybale](#deploying-haybale). |
 | `kustomization.yaml` | Kustomization | Applies all reference resources with namespaces ordered first. |
 
 ## What to edit before applying

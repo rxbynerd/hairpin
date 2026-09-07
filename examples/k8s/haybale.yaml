@@ -102,6 +102,15 @@ type: Opaque
 stringData:
   HAYBALE_GITEA_TOKEN: "REPLACE_ME"
 ---
+# Its own identity rather than the namespace default, so a future
+# RoleBinding in this namespace cannot reach haybale by accident.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: haybale
+  namespace: hairpin
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -119,6 +128,7 @@ spec:
       labels:
         app.kubernetes.io/name: haybale
     spec:
+      serviceAccountName: haybale
       # haybale needs no Kubernetes API access; a credential-handling
       # proxy is exactly the workload a mounted token would make worse
       # to compromise.
@@ -175,6 +185,11 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
+            limits:
+              # A clone streams through this proxy, so the ceiling is
+              # higher than billet's; bounded so a large fetch or a
+              # request flood costs the Pod rather than the node.
+              memory: 512Mi
       volumes:
         - name: config
           configMap:
@@ -201,3 +216,28 @@ spec:
   ports:
     - port: 8466
       targetPort: http
+---
+# haybale authenticates every request, but it holds an upstream git
+# credential and is resolvable from every Pod in the cluster. Sandbox
+# Pods are its only client, so ingress is confined to their namespace;
+# like billet's policy, this holds only on a CNI that enforces
+# NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: haybale
+  namespace: hairpin
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: haybale
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: hairpin-sandboxes
+      ports:
+        - protocol: TCP
+          port: 8466
