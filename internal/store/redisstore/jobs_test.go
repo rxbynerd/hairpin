@@ -256,6 +256,82 @@ func TestListJobsPagination(t *testing.T) {
 	}
 }
 
+func TestDeleteJob(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, Options{})
+
+	j := newTestJob("hp-del")
+	if err := s.CreateJob(ctx, j); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if _, err := s.AppendEvent(ctx, j.ID, store.Event{Type: "text_delta"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := s.PutPermission(ctx, j.ID, store.PermissionRequest{RequestID: "req-1", State: store.PermissionPending}); err != nil {
+		t.Fatalf("PutPermission: %v", err)
+	}
+
+	if err := s.DeleteJob(ctx, j.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	if _, err := s.GetJob(ctx, j.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetJob after delete: got %v, want ErrNotFound", err)
+	}
+	if _, err := s.ReadEvents(ctx, j.ID, "", 0); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ReadEvents after delete: got %v, want ErrNotFound", err)
+	}
+	if _, err := s.GetPermission(ctx, j.ID, "req-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetPermission after delete: got %v, want ErrNotFound", err)
+	}
+
+	jobs, _, err := s.ListJobs(ctx, 50, "")
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	for _, cand := range jobs {
+		if cand.ID == j.ID {
+			t.Fatalf("deleted job %s still present in ListJobs", j.ID)
+		}
+	}
+}
+
+func TestDeleteJobNotFound(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, Options{})
+
+	err := s.DeleteJob(ctx, "hp-missing")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("DeleteJob: got %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteJobLeavesOthersIntact(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, Options{})
+
+	a := newTestJob("hp-a")
+	b := newTestJob("hp-b")
+	if err := s.CreateJob(ctx, a); err != nil {
+		t.Fatalf("CreateJob a: %v", err)
+	}
+	if err := s.CreateJob(ctx, b); err != nil {
+		t.Fatalf("CreateJob b: %v", err)
+	}
+
+	if err := s.DeleteJob(ctx, a.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("GetJob b: %v", err)
+	}
+	if got.ID != b.ID {
+		t.Fatalf("GetJob b mismatch: %+v", got)
+	}
+}
+
 func TestListJobsEmpty(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t, Options{})

@@ -263,3 +263,23 @@ func (r *redisStore) UpdateJob(ctx context.Context, id string, fn func(*job.Job)
 	}
 	return nil, conflictf("job %s: update lost the race %d times", id, maxUpdateRetries)
 }
+
+// DeleteJob removes the job hash, its event stream, its permissions
+// hash, and its index entry in one pipeline.
+func (r *redisStore) DeleteJob(ctx context.Context, id string) error {
+	ok, err := r.jobExists(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete job %s: %w", id, err)
+	}
+	if !ok {
+		return notFoundf("job %s", id)
+	}
+	if _, err := r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(ctx, jobKey(id), eventsKey(id), permsKey(id))
+		pipe.ZRem(ctx, jobsIndexKey, id)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("delete job %s: %w", id, err)
+	}
+	return nil
+}

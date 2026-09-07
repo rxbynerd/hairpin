@@ -113,6 +113,25 @@ func (m *memStore) UpdateJob(_ context.Context, id string, fn func(*job.Job) err
 	return &out, nil
 }
 
+func (m *memStore) DeleteJob(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.jobs[id]; !ok {
+		return fmt.Errorf("job %s: %w", id, ErrNotFound)
+	}
+	delete(m.jobs, id)
+	delete(m.events, id)
+	delete(m.perms, id)
+	delete(m.watchers, id)
+	for i, cand := range m.order {
+		if cand == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func (m *memStore) AppendEvent(_ context.Context, jobID string, ev Event) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

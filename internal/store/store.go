@@ -74,6 +74,11 @@ type Store interface {
 	// side-effect free. Returns the updated job.
 	UpdateJob(ctx context.Context, id string, fn func(*job.Job) error) (*job.Job, error)
 
+	// DeleteJob permanently removes a job: its record, its event
+	// timeline, its permission requests, and its entry in the job
+	// index. ErrNotFound if the job does not exist.
+	DeleteJob(ctx context.Context, id string) error
+
 	// AppendEvent appends to the job's timeline and returns the assigned
 	// event ID. Implementations cap the timeline length (oldest events
 	// are dropped).
