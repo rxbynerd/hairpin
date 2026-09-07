@@ -54,9 +54,9 @@ and what the harness's RBAC is for, is in
 - `sandbox-token.yaml` and `haybale.yaml`'s `haybale-gitea-token`
   Secret: treat as **required**, not optional, if you apply
   `hairpin.yaml` and `haybale.yaml` as they ship — `key.pem` is not a
-  real PEM, and hairpin's `--sandbox-token-key` is expected to reject an
-  unparseable key at startup the same way haybale itself fails fast on a
-  bad key or JWKS file. Generate a real pair with `hairpin keygen`, or
+  real PEM, and hairpin's `--sandbox-token-key` rejects an unparseable
+  key at startup the same way haybale itself fails fast on a bad key or
+  JWKS file. Generate a real pair with `hairpin keygen`, or
   drop both `sandbox-token.yaml` and `haybale.yaml` and remove the
   `--sandbox-token-*` flags from `hairpin.yaml` if you have no use for
   proxied git access.
@@ -133,8 +133,7 @@ just smoke-test`.
 
 ## Deploying haybale
 
-haybale (docs at [`~/Developer/haybale`](https://github.com/rxbynerd/haybale)
-— a local, read-only checkout in this dev environment) is an
+haybale ([docs](https://github.com/rxbynerd/haybale)) is an
 authenticating reverse proxy for Git smart HTTP: a sandbox Pod
 authenticates to it with the short-lived JWT hairpin's
 `--sandbox-token-*` issuer minted for that run, haybale checks a

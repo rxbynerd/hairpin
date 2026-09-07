@@ -66,6 +66,25 @@ point wiring all three together.
   declares the tools when it has no `--billet-addr`.
 - `secret.yaml`: the placeholder `ANTHROPIC_API_KEY` value, or any
   other provider keys your RunConfig profiles reference.
+- `sandbox-token.yaml`: both halves ship as non-functional
+  placeholders, and `hairpin.yaml` passes `--sandbox-token-key` at all
+  times, so this file is **required**, not optional. Run `hairpin
+  keygen --out key.pem --jwks-out jwks.json` and create the
+  `hairpin-sandbox-token-key` Secret and `haybale-jwks` ConfigMap from
+  its output; `key.pem` as shipped is not a PEM, and hairpin rejects an
+  unparseable key at startup the same way haybale fails fast on a bad
+  key or JWKS file. See [Deploying haybale](#deploying-haybale).
+- `haybale.yaml`: `containers[0].image` — no haybale image is
+  published, so build one from a checkout; the upstream it proxies to,
+  which ships wired to the dev-only in-cluster gitea from
+  `scripts/dev/gitea.yaml` with a commented `github-app` block ready
+  for a real GitHub App; the `haybale-gitea-token` Secret, another
+  placeholder; and the `haybale-policy` ConfigMap, whose shipped `hp-*`
+  ceiling grants every run read and write on every repo the upstream
+  credential can reach. Drop both `sandbox-token.yaml` and
+  `haybale.yaml` from the Kustomization and remove the
+  `--sandbox-token-*` flags from `hairpin.yaml` if you have no use for
+  proxied git access.
 
 Namespace and advertise address are not among them: an in-cluster
 hairpin reads its namespace from its projected ServiceAccount and
@@ -81,6 +100,11 @@ Use the Kustomization on a new cluster so the namespaces are created
 before namespaced resources. A raw `kubectl apply -f examples/k8s/`
 walks files lexically and can try `hairpin.yaml` before
 `namespace.yaml`.
+
+The Kustomization as shipped crash-loops hairpin until the signing
+keypair exists: replace `sandbox-token.yaml`'s placeholders with
+`hairpin keygen` output first, or drop the file and the
+`--sandbox-token-*` flags.
 
 Submitting a job once the `hairpin` Service is up: port-forward or
 call `JobService/SubmitJob` from another Pod in the cluster (see
@@ -301,8 +325,8 @@ alone, so re-deploying the same key always serves the same `kid` and a
 key rotation always serves a different one. Run it once, then:
 
 - Put the private key PEM into the Secret `-sandbox-token-key` reads
-  from (`kubectl create secret generic sandbox-token-key
-  --from-file=key.pem=<path>`, mounted into the hairpin Pod).
+  from (`kubectl create secret generic
+  hairpin-sandbox-token-key --from-file=key.pem=<path>`, mounted into the hairpin Pod).
 - Give the JWKS document to haybale.
 
 **haybale's `jwksURL` must be HTTPS or loopback** — it refuses a
