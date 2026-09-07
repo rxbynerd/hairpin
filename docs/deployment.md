@@ -478,9 +478,11 @@ roughly every 30 seconds while running. Hairpin flushes this field at
 most once every 10 seconds rather than on every event, so allow for the
 heartbeat interval, flush delay, scheduling, and polling jitter. A
 value that remains unchanged for well over a minute warrants
-investigation; poll `GetJob` or watch heartbeat events directly.
-Hairpin does not reconcile stale jobs automatically (see
-[issue #3](https://github.com/rxbynerd/hairpin/issues/3)).
+investigation; poll `GetJob` or watch heartbeat events directly. A
+`running` job whose harness has gone away is not reconciled
+automatically and must be cancelled by hand (see
+[issue #3](https://github.com/rxbynerd/hairpin/issues/3)); a job whose
+harness never dialled back at all is reaped, see below.
 
 ### Run traces
 
@@ -524,21 +526,41 @@ covers what hairpin itself records, from hairpin's own Pod. See
 
 ### Job retention
 
-Hairpin does not currently expire or delete job records, event
-timelines, or permission requests on any schedule — there is no
-job-level TTL or reaping job. The only built-in bound is that each
-job's event stream is capped at roughly 10,000 entries
+By default hairpin never expires or deletes job records, event
+timelines, or permission requests. The only built-in bound is that
+each job's event stream is capped at roughly 10,000 entries
 (`internal/store/redisstore.DefaultMaxEvents`, approximate `XADD
 MAXLEN ~` trimming): oldest events are dropped once a single job's
 timeline grows past that, but the job record itself, and every other
-job's data, is kept indefinitely. Operators who need bounded storage
-must currently manage terminal-job records externally, taking care to
-remove the job hash, event stream, permission hash, and jobs-index
-member together and never expire a live job. Native retention and
-stale-job reconciliation are tracked in
+job's data, is kept indefinitely unless `-retention` is set.
+
+`hairpin serve -retention <duration>` enables the deletion sweep of
+`internal/reaper`, a background loop ticking every ~5 minutes
+(jittered) that deletes a job's record, event timeline, permission
+requests, and index entry once it has been terminal (`succeeded`,
+`failed`, or `cancelled`) for longer than that duration. `-retention 0`
+(the default) disables deletion entirely and keeps jobs forever; a
+non-terminal job is never a deletion candidate regardless of age.
+
+The same loop always runs a second, independent sweep — even at
+`-retention 0` — that fails a job stuck in `awaiting_harness`, so a
+launched harness Job that never dials back cannot wedge its job open
+forever. The deadline is the job's own `RunConfig.timeout` plus
+`-deadline-slack` plus a five-minute margin, measured from the job's
+creation; a stored RunConfig that cannot be parsed, or that carries no
+timeout, falls back to one hour plus slack. A harness that connects
+concurrently wins the race: the reaper re-checks the job is still
+`awaiting_harness` inside the same atomic update that writes `failed`.
+Reconciling a job whose harness disappears mid-run is still open, see
 [issue #3](https://github.com/rxbynerd/hairpin/issues/3).
 
+Operators wanting a different retention policy can still manage
+terminal-job records externally, taking care to remove the job hash,
+event stream, permission hash, and jobs-index member together and
+never expire a live job.
+
 `rbac.yaml` grants only `create` on `batch/v1` Jobs because that is the
-only Kubernetes Job operation the launcher performs. Any future
-reconciler should add only the read/delete verbs its implementation
-requires.
+only Kubernetes Job operation the launcher performs. The reaper only
+ever touches hairpin's own store, never the Kubernetes Jobs it
+launches. Any future reconciler that does touch them should add only
+the read/delete verbs its implementation requires.

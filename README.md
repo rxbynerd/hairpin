@@ -206,6 +206,7 @@ Flags for `hairpin serve`, from `cmd/hairpin/serve.go`:
 | `-launcher` | `kubernetes` | Harness launcher: `kubernetes` or `none`. |
 | `-profiles` | *(empty)* | Directory of RunConfig profile templates (`<name>.json`). |
 | `-default-profile` | `default` | Profile used when a submit names none. |
+| `-retention` | `0` | Delete a terminal job's record, timeline, and permissions this long after it finishes. `0` keeps jobs forever. |
 | `-namespace` | *(the Pod's own)* | Namespace harness Jobs are created in, read from the projected ServiceAccount when running in-cluster. |
 | `-harness-image` | `ghcr.io/rxbynerd/stirrup:latest` | Harness image run as the Job. |
 | `-harness-service-account` | *(empty)* | ServiceAccount for harness Pods. Its token is mounted so the sandbox executor can reach the API; empty mounts none. |

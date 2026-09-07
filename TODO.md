@@ -6,7 +6,7 @@ is tracked in GitHub rather than as a session log:
 
 ## Reliability and operations
 
-- [Add job retention and stale-job reconciliation](https://github.com/rxbynerd/hairpin/issues/3), including jobs that never dial back or lose their harness.
+- [Add job retention and stale-job reconciliation](https://github.com/rxbynerd/hairpin/issues/3): `--retention` deletes terminal jobs past the window and the same reaper fails jobs that never dial back. Still open for a job that loses its harness mid-run, which is reported through `last_event_at` but never settled automatically.
 - [Support safe multi-replica deployments](https://github.com/rxbynerd/hairpin/issues/4) by moving live control-event routing out of process.
 - Verify the sandbox path with each documented RuntimeClass; the local kind recipe currently exercises only the cluster-default runtime.
 
