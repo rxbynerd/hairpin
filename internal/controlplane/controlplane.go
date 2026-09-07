@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/hairpin/internal/memory"
 	"github.com/rxbynerd/hairpin/internal/registry"
 	"github.com/rxbynerd/hairpin/internal/store"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // Harness event types (HarnessEvent.type).
@@ -98,6 +99,7 @@ type Handler struct {
 	reg    *registry.Registry
 	log    *slog.Logger
 	memory memory.Client
+	tel    *telemetry.Recorder
 
 	now               func() time.Time
 	lastEventFlush    time.Duration
@@ -129,6 +131,13 @@ func WithMemory(c memory.Client) Option {
 	return func(h *Handler) {
 		h.memory = c
 	}
+}
+
+// WithTelemetry records spans and metrics for stream lifecycle,
+// harness events, outcomes, and memory calls. A nil recorder records
+// nothing.
+func WithTelemetry(rec *telemetry.Recorder) Option {
+	return func(h *Handler) { h.tel = rec }
 }
 
 // New returns a control-plane handler backed by st, publishing live
@@ -213,6 +222,7 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 		return nil
 	}
 	if first.GetType() != evReady {
+		h.tel.HarnessSession(ctx, telemetry.SessionNotReady)
 		h.log.Warn("harness sent non-ready first event", "type", first.GetType())
 		h.sendCancel(s, "")
 		return nil
@@ -220,6 +230,7 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 
 	jobID, token := job.ParseSession(first.GetId())
 	if jobID == "" {
+		h.tel.HarnessSession(ctx, telemetry.SessionNoID)
 		h.log.Warn("harness ready event carried no session id", "harness_version", first.GetHarnessVersion())
 		h.sendCancel(s, "")
 		return nil
@@ -227,6 +238,7 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 
 	j, err := h.store.GetJob(ctx, jobID)
 	if err != nil {
+		h.tel.HarnessSession(ctx, telemetry.SessionUnknownJob)
 		h.log.Warn("harness claimed unknown job", "job_id", jobID, "error", err)
 		h.sendCancel(s, jobID)
 		return nil
@@ -235,12 +247,14 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	// The session string is the bearer credential: job IDs alone are
 	// guessable (time-ordered ULIDs, visible in pod names and URLs).
 	if !j.AcceptsToken(token) {
+		h.tel.HarnessSession(ctx, telemetry.SessionBadToken)
 		h.log.Warn("harness presented wrong session token", "job_id", jobID)
 		h.sendCancel(s, jobID)
 		return nil
 	}
 
 	if j.Status.Terminal() || j.CancelRequested {
+		h.tel.HarnessSession(ctx, telemetry.SessionClosedJob)
 		h.log.Info("cancelling harness for closed job",
 			"job_id", jobID, "status", string(j.Status), "cancel_requested", j.CancelRequested)
 		h.sendCancel(s, jobID)
@@ -254,6 +268,7 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 	if err := h.reg.Register(jobID, sess); err != nil {
 		// A second harness for the same job: the first stream owns the
 		// run, so this one is dismissed without touching the record.
+		h.tel.HarnessSession(ctx, telemetry.SessionDuplicate)
 		h.log.Warn("rejecting duplicate harness session", "job_id", jobID, "error", err)
 		h.sendCancel(s, jobID)
 		return nil
@@ -265,17 +280,29 @@ func (h *Handler) runTask(ctx context.Context, s stream) error {
 
 	cfg, err := parseRunConfig(j.RunConfigJSON)
 	if err != nil {
+		h.tel.HarnessSession(ctx, telemetry.SessionUnusableRunConfig)
 		h.log.Error("stored run config is unusable", "job_id", jobID, "error", err)
 		h.sendCancel(s, jobID)
 		h.failJob(ctx, jobID, fmt.Sprintf("stored run config is not a valid RunConfig: %v", err))
 		return nil
 	}
 
+	// The stream is its own trace, started by the harness's inbound RPC;
+	// the link points back at the submission that created the job.
+	ctx, span := h.tel.Start(ctx, "hairpin.harness_session", telemetry.LinkToTraceParent(j.TraceParent))
+	defer span.End()
+	telemetry.SetJobID(span, jobID)
+
 	if err := sess.Send(&harnessv1.ControlEvent{Type: ctlTaskAssignment, Task: cfg}); err != nil {
+		h.tel.HarnessSession(ctx, telemetry.SessionAssignmentFailed)
+		telemetry.Fail(span, err)
 		h.log.Error("failed to send task assignment", "job_id", jobID, "error", err)
 		h.failJob(ctx, jobID, fmt.Sprintf("failed to send task assignment: %v", err))
 		return err
 	}
+	h.tel.HarnessSession(ctx, telemetry.SessionAssigned)
+	h.tel.SessionOpened(ctx)
+	defer h.tel.SessionClosed(ctx)
 
 	started := h.now()
 	if _, err := h.store.UpdateJob(ctx, jobID, func(j *job.Job) error {
@@ -349,6 +376,7 @@ func (h *Handler) finaliseCancelled(ctx context.Context, jobID string) {
 		return
 	}
 	h.appendStatus(ctx, jobID, job.StatusCancelled, at)
+	h.tel.JobCompleted(ctx, job.StatusCancelled, "cancelled", 0)
 }
 
 func (h *Handler) failJob(ctx context.Context, jobID, reason string) {
@@ -369,6 +397,7 @@ func (h *Handler) failJob(ctx context.Context, jobID, reason string) {
 		return
 	}
 	h.appendStatus(ctx, jobID, job.StatusFailed, at)
+	h.tel.JobCompleted(ctx, job.StatusFailed, "", 0)
 }
 
 func (h *Handler) appendStatus(ctx context.Context, jobID string, status job.Status, at time.Time) {

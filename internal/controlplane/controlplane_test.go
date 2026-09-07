@@ -116,12 +116,12 @@ func (c *testClock) advance(d time.Duration) {
 	c.at = c.at.Add(d)
 }
 
-func testHandler(t *testing.T) (*Handler, store.Store, *registry.Registry) {
+func testHandler(t *testing.T, opts ...Option) (*Handler, store.Store, *registry.Registry) {
 	t.Helper()
 	st := store.NewMemStore(0)
 	t.Cleanup(func() { _ = st.Close() })
 	reg := registry.New()
-	h := New(st, reg, WithLogger(slog.New(slog.DiscardHandler)))
+	h := New(st, reg, append([]Option{WithLogger(slog.New(slog.DiscardHandler))}, opts...)...)
 	return h, st, reg
 }
 
