@@ -137,7 +137,10 @@ steeplechase is built from `${STEEPLECHASE_DIR}/Dockerfile`
 but neither its build nor its rollout is allowed to fail the deploy:
 that Dockerfile builds with a Go toolchain older than its own `go.mod`
 requires, and the published image is not pullable either, so the
-collector may simply be absent. OTLP export does not block the
+collector may simply be absent. When the build fails but a
+`localhost/steeplechase:dev` image is already in the store — built
+out-of-band, say — that one is loaded and pinned instead, so a deploy
+does not swap a working collector for a tag that cannot be pulled. OTLP export does not block the
 harness, so a run completes regardless — it just has nowhere to send
 its trace. `smoke-test.sh` looks for the job's ID in steeplechase's
 grouped stdout after the job succeeds, and warns rather than fails

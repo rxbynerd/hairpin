@@ -79,23 +79,34 @@ else
     log "no Billet checkout at ${BILLET_DIR}; the published image will be pulled"
 fi
 
-# steeplechase is best-effort: its Dockerfile builds with a Go toolchain
+# steeplechase is best-effort. Its Dockerfile builds with a Go toolchain
 # older than its own go.mod requires, so the build fails until that is
-# fixed upstream. A run whose trace has nowhere to go still completes,
-# because OTLP export does not block the harness.
+# fixed upstream, and its published image is not pullable — which makes
+# an image already in the store worth reusing, since the alternative is
+# leaving the Deployment pointed at a tag that cannot be pulled. A run
+# whose trace has nowhere to go still completes: OTLP export does not
+# block the harness.
 if [ -f "${STEEPLECHASE_DIR}/Dockerfile" ]; then
     log "building ${STEEPLECHASE_IMAGE} from ${STEEPLECHASE_DIR}..."
     if (cd "${STEEPLECHASE_DIR}" && "${ENGINE}" build -t "${STEEPLECHASE_IMAGE}" -f Dockerfile .); then
-        log "loading ${STEEPLECHASE_IMAGE} into the cluster..."
-        "${ENGINE}" save --format oci-archive -o "${steeplechase_archive}" "${STEEPLECHASE_IMAGE}"
-        kind load image-archive "${steeplechase_archive}" --name "${CLUSTER_NAME}"
         steeplechase_local=true
     else
-        warn "the steeplechase build failed; its Deployment keeps the published" \
-             "image reference and runs may have no collector to export to"
+        warn "the steeplechase build failed"
     fi
 else
-    log "no steeplechase checkout at ${STEEPLECHASE_DIR}; the published image will be pulled"
+    log "no steeplechase checkout at ${STEEPLECHASE_DIR}"
+fi
+if [ "${steeplechase_local}" = false ] && "${ENGINE}" image exists "${STEEPLECHASE_IMAGE}"; then
+    log "reusing the ${STEEPLECHASE_IMAGE} already in the image store"
+    steeplechase_local=true
+fi
+if [ "${steeplechase_local}" = true ]; then
+    log "loading ${STEEPLECHASE_IMAGE} into the cluster..."
+    "${ENGINE}" save --format oci-archive -o "${steeplechase_archive}" "${STEEPLECHASE_IMAGE}"
+    kind load image-archive "${steeplechase_archive}" --name "${CLUSTER_NAME}"
+else
+    warn "no steeplechase image is available; its Deployment keeps the published" \
+         "reference and runs may have no collector to export to"
 fi
 
 log "applying manifests..."
