@@ -6,6 +6,7 @@ resources:
   - rbac-sandbox.yaml
   - redis.yaml
   - billet.yaml
+  - steeplechase.yaml
   - profiles.yaml
   - secret.yaml
   - hairpin.yaml
