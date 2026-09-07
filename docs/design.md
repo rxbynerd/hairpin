@@ -63,15 +63,16 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
 | `internal/store` | `Store` interface + in-memory impl (tests/dev). |
 | `internal/store/redisstore` | Redis impl: jobs as hashes, events as capped streams, index as zset, blocking event subscription. |
 | `internal/registry` | In-process map of live harness sessions; the only bridge from API handlers to an open `RunTask` stream. |
-| `internal/controlplane` | connect-go handler for `stirrup.harness.v1.HarnessService` — correlation, assignment, event pump, permission bridging, memory-call admission and fulfilment, terminal handling. |
+| `internal/controlplane` | connect-go handler for `stirrup.harness.v1.HarnessService` — correlation, assignment, event pump, permission bridging, memory-call admission and fulfilment, sandbox-token admission and issuance, terminal handling. |
 | `internal/memory` | Billet client (connect-go, plaintext gRPC) and the `search_memory` / `save_memory` tool contracts: input validation, Billet's request limits, and the error policy that decides what a model is told. |
+| `internal/tokenissuer` | ES256 (P-256) sandbox identity tokens: key generation and PEM load, minting with the `haybale.dev/repos` claim, and the JWKS document served at `/.well-known/jwks.json`. |
 | `internal/service` | Core operations (Submit/Get/List/Watch/Cancel/Answer) shared by the connect API and the web UI. |
 | `internal/api` | connect-go handler for `hairpin.v1.JobService`, a thin shim over `internal/service`. |
 | `internal/launcher` | `Launcher` interface; a client-go `batch/v1` Job impl and `None` for harnesses started out-of-band. |
 | `internal/web` | Embedded html/template UI: job list, submit form, job detail with SSE live event feed, approve/deny buttons. |
 | `internal/telemetry` | OpenTelemetry pipeline (OTLP or stdout, off by default) and the recorder for hairpin's own spans and metrics; owns metric-attribute cardinality. |
-| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, profiles dir, harness Job settings, telemetry export, and the sandbox coordinates and trace-emitter endpoint submitted RunConfigs inherit. |
-| `cmd/hairpin` | `hairpin serve`; wires everything onto one h2c listener. |
+| `internal/config` | Flags/env → Config: listen addr, advertise addr, Redis, profiles dir, harness Job settings, telemetry export, sandbox identity token issuance, and the sandbox coordinates and trace-emitter endpoint submitted RunConfigs inherit. |
+| `cmd/hairpin` | `hairpin serve`, which wires everything onto one h2c listener, and `hairpin keygen`, which generates the signing keypair issuance needs. |
 
 Both proto services are served by connect-go on a single h2c port, so
 `stirrup job`'s grpc-go client, gRPC clients, and plain JSON/HTTP
@@ -85,7 +86,7 @@ dials.
 
 | Key | Type | Contents |
 |---|---|---|
-| `hairpin:job:<id>` | hash | job fields (status, prompt, runconfig JSON, stop reason, timestamps, last_event_at) |
+| `hairpin:job:<id>` | hash | job fields (status, prompt, runconfig JSON, repo_scope, stop reason, timestamps, last_event_at) |
 | `hairpin:job:<id>:events` | stream | harness events (protojson payloads), XADD with MAXLEN ~10000 |
 | `hairpin:job:<id>:perms` | hash | pending/answered permission requests keyed by request_id |
 | `hairpin:jobs` | zset | job IDs scored by creation time (listing, newest first) |

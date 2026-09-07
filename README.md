@@ -235,16 +235,20 @@ from the standard `OTEL_*` environment variables. They cover hairpin's
 own signals only — `-harness-telemetry-endpoint` is independent of
 them, and of each other's collectors.
 
-The four sandbox coordinate flags — `-sandbox-image`,
-`-sandbox-namespace`, `-sandbox-service-account`, `-sandbox-runtime` —
-and `-harness-telemetry-endpoint` do not configure hairpin's own
-behaviour: they are values it writes into each submitted RunConfig,
-into the executor and `trace_emitter` respectively, wherever the
-profile left them empty. See [Profiles](#profiles).
+The `-sandbox-image`, `-sandbox-namespace`,
+`-sandbox-service-account`, and `-sandbox-runtime` flags, and
+`-harness-telemetry-endpoint`, do not configure hairpin's own
+behaviour — they are the values it writes into each submitted
+RunConfig, into the executor and `trace_emitter` respectively. See
+[Profiles](#profiles). The `-sandbox-token-*` flags configure hairpin
+as a JWT issuer for haybale's git credential proxy — see [Sandbox
+identity tokens](docs/deployment.md#sandbox-identity-tokens).
 
-The `-sandbox-token-*` flags are hairpin's own: they configure it as a
-JWT issuer for haybale's git credential proxy — see [Sandbox identity
-tokens](docs/deployment.md#sandbox-identity-tokens).
+`hairpin` has one other subcommand: `hairpin keygen --out <path>
+[--jwks-out <path>]` generates the ES256 signing keypair issuance
+needs, writing the private key PEM `-sandbox-token-key` reads and the
+matching JWKS document haybale verifies against, and printing the
+key's `kid`. Neither file is overwritten if it already exists.
 
 `-launcher=none` disables harness launching entirely: jobs sit in
 `awaiting_harness` until something starts a harness out-of-band with
@@ -298,6 +302,17 @@ Within that trusted-network posture, hairpin includes these controls:
   equivalent to reaching Billet — see
   [`docs/memory.md`](docs/memory.md#trust-posture) before mixing trust
   domains on one deployment.
+- **Sandbox identity tokens are off by default.** With
+  `-sandbox-token-key` configured, hairpin becomes a credential issuer:
+  any caller who can reach `SubmitJob` can name a `repo_scope` and get
+  a run holding a JWT haybale honours, bounded only by the `repo_scope`
+  it asked for and haybale's own default-deny policy. Issuance is
+  capped per run and refused for a run whose config declares no
+  `executor.sandbox_identity`, but the submitter supplies that config,
+  so neither is an authorization boundary. An unauthenticated API in
+  front of a credential issuer is a sharper trade than one in front of
+  compute alone — read
+  [`docs/design.md`](docs/design.md#trust-posture) before enabling it.
 
 ## Documentation
 

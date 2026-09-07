@@ -134,6 +134,8 @@ just kind-up             # scripts/dev/kind-up.sh
 just deploy              # build, load into the node, apply examples/k8s + a fake provider
 just smoke-test          # submit one job, assert it completed in a sandbox Pod
 just memory-smoke-test   # submit two jobs, assert the second recalls what the first saved
+just haybale             # build+load haybale, stand up gitea, wire the "git" profile
+just git-smoke-test      # submit one job through the "git" profile, assert the push landed
 just kind-down
 ```
 
@@ -175,12 +177,27 @@ when it is missing.
 `memory-smoke-test.sh` submits two jobs and asserts the second job's
 final text quotes what the first saved, then queries Billet directly
 through a second port-forward so a record Billet never received can be
-told apart from one hairpin did not read back. `deploy.sh` and both
-smoke tests pin their `kubectl` context to `HAIRPIN_KUBE_CONTEXT`
+told apart from one hairpin did not read back. The dev
+scripts pin their `kubectl` context to `HAIRPIN_KUBE_CONTEXT`
 (default `kind-<cluster>`, where the cluster name is
 `HAIRPIN_CLUSTER_NAME`, default `hairpin`) rather than inheriting
 whatever the shell last selected, because the manifests replace
 cluster state by name.
+
+`haybale.sh` builds haybale from a local checkout (`HAYBALE_DIR`),
+loads it into the node, deploys `scripts/dev/gitea.yaml` as a throwaway in-cluster
+git host, bootstraps it with an admin user, an access token and a seed
+repo, and adds a `git` profile pointing at both. `git-smoke-test.sh`
+then submits one job through that profile and asserts the seed repo's
+`main` moved, so a run that reported success without pushing still
+fails. `deploy.sh` regenerates the sandbox-token keypair and re-applies
+the profiles ConfigMap on every run, so re-run `haybale.sh` after every
+`just deploy`, the same way `openrouter.sh` has to be re-run. Note that
+`git-smoke-test` cannot pass on kind as shipped: the `git` profile uses
+`executor.network.mode: "none"`, and the `kindnetd` the dev cluster
+ships enforces the resulting deny-all NetworkPolicy, cutting the
+sandbox off from haybale — the gap and what closing it needs are in
+[`examples/k8s/README.md`](../examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one).
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
@@ -201,10 +218,14 @@ gvisor` against a cluster that has the RuntimeClass.
 
 ### Sandbox coordinates
 
-The `-sandbox-*` flags do not configure hairpin's own behaviour: they
-are the values hairpin writes into each submitted RunConfig's executor
-at submit time, for the `k8s` and `k8s-sandbox` executor types, wherever
-the profile left the field empty.
+The `-sandbox-image`, `-sandbox-namespace`,
+`-sandbox-service-account`, and `-sandbox-runtime` flags do not
+configure hairpin's own behaviour: they are the values hairpin writes
+into each submitted RunConfig's executor at submit time, for the `k8s`
+and `k8s-sandbox` executor types, wherever the profile left the field
+empty. The `-sandbox-token-*` flags are unrelated — they configure
+hairpin's own token issuer, see [Sandbox identity
+tokens](#sandbox-identity-tokens).
 
 | Flag | RunConfig field |
 |---|---|
@@ -314,12 +335,26 @@ an opted-in run config fails fast instead of waiting out the harness's
 | `-sandbox-token-key` | Path to an ES256 (P-256) private key PEM. Empty (the default) disables issuance entirely. |
 | `-sandbox-token-issuer` | The token's `iss` claim. Required when `-sandbox-token-key` is set. |
 | `-sandbox-token-audience` | The token's `aud` claim — must match what haybale's `issuer.audience` config expects. Required when `-sandbox-token-key` is set. The harness's own requested audience (`executor.sandbox_identity.audience`) is informational only; this flag's value always wins, and a mismatch is logged, not honoured. |
-| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less. |
+| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less. hairpin warns at startup above an hour, since a leaked token stays valid for the whole window. |
+
+Setting `-sandbox-token-issuer` or `-sandbox-token-audience` without
+`-sandbox-token-key` is rejected at startup rather than accepted as a
+no-op, so a deployment cannot look configured for issuance while
+refusing every request.
+
+Every mint writes one `Info` line naming the job, the request id, the
+audience, the expiry, and the granted scope. haybale logs the same job
+ID as the token's subject, so the two sides join on it and an issued
+credential can be traced to the run that received it. The token itself
+is never logged, recorded, or persisted.
 
 `hairpin keygen --out <path> [--jwks-out <path>]` generates the key:
 a fresh P-256 private key PEM written to `--out` with file mode
 `0600`, and the matching JWKS document written to `--jwks-out` (or
-stdout when omitted). The command also prints the key's `kid` — the
+stdout when omitted). Both files are created exclusively — keygen
+fails rather than overwrite an existing key, because replacing a live
+signing key invalidates every token already issued and requires
+restarting hairpin and haybale both. The command also prints the key's `kid` — the
 RFC 7638 JWK thumbprint of the public key, deterministic in the key
 alone, so re-deploying the same key always serves the same `kid` and a
 key rotation always serves a different one. Run it once, then:
