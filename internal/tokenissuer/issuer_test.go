@@ -99,7 +99,7 @@ func TestMintRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMintOmitsEmptyRepoScope(t *testing.T) {
+func TestMintEncodesEmptyRepoScopeAsEmptyArray(t *testing.T) {
 	iss := testIssuer(t)
 
 	for _, scope := range [][]string{nil, {}} {
@@ -108,8 +108,13 @@ func TestMintOmitsEmptyRepoScope(t *testing.T) {
 			t.Fatalf("Mint: %v", err)
 		}
 		claims := parseVerified(t, iss, token).Claims.(jwt.MapClaims)
-		if _, present := claims[repoScopeClaim]; present {
-			t.Errorf("scope %v: %s claim present, want omitted entirely", scope, repoScopeClaim)
+		raw, present := claims[repoScopeClaim]
+		if !present {
+			t.Fatalf("scope %v: %s claim absent; haybale reads absence as no narrowing", scope, repoScopeClaim)
+		}
+		arr, ok := raw.([]any)
+		if !ok || len(arr) != 0 {
+			t.Errorf("scope %v: %s = %#v, want an empty JSON array", scope, repoScopeClaim, raw)
 		}
 	}
 }

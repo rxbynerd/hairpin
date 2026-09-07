@@ -97,9 +97,10 @@ func (i *Issuer) Audience() string { return i.audience }
 func (i *Issuer) JWKS() []byte { return i.jwks }
 
 // Mint signs a sandbox identity token for sub (the run identity —
-// hairpin uses the job ID), scoped to repoScope. An empty repoScope
-// omits the claim entirely rather than encoding an empty array, so
-// haybale's policy is what decides "no repos" versus "some repos".
+// hairpin uses the job ID), scoped to repoScope. The scope claim is
+// always present: haybale treats an absent claim as "no narrowing",
+// so an empty scope must be encoded as an empty array to deny every
+// repo rather than fall through to the policy ceiling.
 func (i *Issuer) Mint(sub string, repoScope []string) (token string, expiresAt time.Time, err error) {
 	now := i.now().UTC()
 	exp := now.Add(i.ttl)
@@ -117,9 +118,10 @@ func (i *Issuer) Mint(sub string, repoScope []string) (token string, expiresAt t
 		"exp": exp.Unix(),
 		"jti": jti,
 	}
-	if len(repoScope) > 0 {
-		claims[repoScopeClaim] = repoScope
+	if repoScope == nil {
+		repoScope = []string{}
 	}
+	claims[repoScopeClaim] = repoScope
 
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = i.kid
