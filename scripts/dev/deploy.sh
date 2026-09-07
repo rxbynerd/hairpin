@@ -6,9 +6,9 @@
 # that with the locally built one, which never leaves the cluster's
 # image store (hence imagePullPolicy: IfNotPresent).
 #
-# Billet gets the same treatment when a sibling checkout is present at
-# BILLET_DIR, so a change to the memory store can be exercised without
-# publishing it.
+# Billet and steeplechase get the same treatment when a sibling checkout
+# is present at BILLET_DIR or STEEPLECHASE_DIR, so a change to the memory
+# store or the collector can be exercised without publishing it.
 
 set -euo pipefail
 
@@ -19,11 +19,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 IMAGE="localhost/hairpin:dev"
 BILLET_DIR="${BILLET_DIR:-${REPO_ROOT}/../billet}"
 BILLET_IMAGE="localhost/billet:dev"
+STEEPLECHASE_DIR="${STEEPLECHASE_DIR:-${REPO_ROOT}/../steeplechase}"
+STEEPLECHASE_IMAGE="localhost/steeplechase:dev"
 
 export KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-podman}"
 ENGINE="${HAIRPIN_CONTAINER_ENGINE:-podman}"
 
 log()  { printf '[deploy] %s\n' "$*"; }
+warn() { printf '[deploy] WARNING: %s\n' "$*" >&2; }
 fail() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # Every manifest here is development-only and several replace cluster
@@ -52,7 +55,9 @@ kubectl config get-contexts -o name | grep -qx "${KUBE_CONTEXT}" \
 workdir="$(mktemp -d -t hairpin-images-XXXXXX)"
 archive="${workdir}/hairpin.tar"
 billet_archive="${workdir}/billet.tar"
+steeplechase_archive="${workdir}/steeplechase.tar"
 billet_local=false
+steeplechase_local=false
 trap 'rm -rf "${workdir}"' EXIT INT TERM
 
 log "building ${IMAGE}..."
@@ -74,6 +79,25 @@ else
     log "no Billet checkout at ${BILLET_DIR}; the published image will be pulled"
 fi
 
+# steeplechase is best-effort: its Dockerfile builds with a Go toolchain
+# older than its own go.mod requires, so the build fails until that is
+# fixed upstream. A run whose trace has nowhere to go still completes,
+# because OTLP export does not block the harness.
+if [ -f "${STEEPLECHASE_DIR}/Dockerfile" ]; then
+    log "building ${STEEPLECHASE_IMAGE} from ${STEEPLECHASE_DIR}..."
+    if (cd "${STEEPLECHASE_DIR}" && "${ENGINE}" build -t "${STEEPLECHASE_IMAGE}" -f Dockerfile .); then
+        log "loading ${STEEPLECHASE_IMAGE} into the cluster..."
+        "${ENGINE}" save --format oci-archive -o "${steeplechase_archive}" "${STEEPLECHASE_IMAGE}"
+        kind load image-archive "${steeplechase_archive}" --name "${CLUSTER_NAME}"
+        steeplechase_local=true
+    else
+        warn "the steeplechase build failed; its Deployment keeps the published" \
+             "image reference and runs may have no collector to export to"
+    fi
+else
+    log "no steeplechase checkout at ${STEEPLECHASE_DIR}; the published image will be pulled"
+fi
+
 log "applying manifests..."
 "${KUBECTL[@]}" apply \
     -f "${REPO_ROOT}/examples/k8s/namespace.yaml" \
@@ -81,6 +105,7 @@ log "applying manifests..."
     -f "${REPO_ROOT}/examples/k8s/rbac-sandbox.yaml" \
     -f "${REPO_ROOT}/examples/k8s/redis.yaml" \
     -f "${REPO_ROOT}/examples/k8s/billet.yaml" \
+    -f "${REPO_ROOT}/examples/k8s/steeplechase.yaml" \
     -f "${REPO_ROOT}/examples/k8s/profiles.yaml" \
     -f "${REPO_ROOT}/examples/k8s/hairpin.yaml"
 
@@ -97,10 +122,20 @@ pin_local_image hairpin hairpin "${IMAGE}"
 if [ "${billet_local}" = true ]; then
     pin_local_image billet billet "${BILLET_IMAGE}"
 fi
+if [ "${steeplechase_local}" = true ]; then
+    pin_local_image steeplechase steeplechase "${STEEPLECHASE_IMAGE}"
+fi
 
 log "waiting for rollouts..."
 "${KUBECTL[@]}" -n hairpin rollout status deployment/redis --timeout=120s
 "${KUBECTL[@]}" -n hairpin rollout status deployment/billet --timeout=120s
+# Telemetry is not on the path a smoke test asserts, so a steeplechase
+# that cannot pull its image holds nothing else up.
+if [ "${steeplechase_local}" = true ]; then
+    "${KUBECTL[@]}" -n hairpin rollout status deployment/steeplechase --timeout=120s
+elif ! "${KUBECTL[@]}" -n hairpin rollout status deployment/steeplechase --timeout=30s; then
+    warn "steeplechase is not ready; runs will export their traces nowhere"
+fi
 # The provider reads server.py once at start, so a changed ConfigMap
 # only takes effect on a fresh Pod.
 "${KUBECTL[@]}" -n hairpin rollout restart deployment/fake-provider

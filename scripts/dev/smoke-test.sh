@@ -16,6 +16,7 @@ PORT="${HAIRPIN_PORT:-8130}"
 BASE="http://localhost:${PORT}"
 
 log()  { printf '[smoke] %s\n' "$*"; }
+warn() { printf '[smoke] WARNING: %s\n' "$*" >&2; }
 fail() { printf '[smoke] FAIL: %s\n' "$*" >&2; exit 1; }
 
 # Pinned so the probe cannot be answered by whichever cluster the shell
@@ -60,3 +61,27 @@ printf '%s' "${response}" | grep -q 'Sandbox probe complete' \
     || fail "job succeeded without the sandbox probe's final text: ${response}"
 
 log "job ${job_id} succeeded, sandbox probe reported back"
+
+# hairpin injects a trace_emitter pointing at steeplechase, so the
+# harness's run trace should reach it, carrying the job ID as its
+# run.id. This warns rather than fails: steeplechase is optional in
+# the dev cluster, and a run block that has already been flushed can
+# take considerably longer to surface through `kubectl logs` on a
+# kind-on-podman node than it took to arrive.
+if "${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/steeplechase --timeout=5s >/dev/null 2>&1; then
+    traced=false
+    for _ in $(seq 1 30); do
+        if "${KUBECTL[@]}" -n "${NAMESPACE}" logs deploy/steeplechase --since=5m 2>/dev/null | grep -q "${job_id}"; then
+            traced=true
+            break
+        fi
+        sleep 2
+    done
+    if [ "${traced}" = true ]; then
+        log "steeplechase logged a run block for ${job_id}"
+    else
+        warn "steeplechase is running but logged no run block for ${job_id} within 60s"
+    fi
+else
+    log "steeplechase is not running; skipping the trace-delivery check"
+fi
