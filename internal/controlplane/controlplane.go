@@ -61,6 +61,11 @@ const msgStreamClosed = "harness stream closed without done"
 // instead of waiting out the harness's 60s fail-closed timeout.
 const sandboxTokenRefusal = "hairpin does not issue sandbox identity tokens"
 
+// sandboxTokenIssuanceFailure is returned for sandbox_token_request
+// when an issuer is configured but minting failed. It is deliberately
+// generic: the real error is logged, not sent to the harness.
+const sandboxTokenIssuanceFailure = "hairpin failed to issue a sandbox identity token"
+
 // Refusals for a tool_result_request hairpin will not answer. Each is
 // sent at once so the harness does not block for its per-call timeout.
 const (
@@ -79,11 +84,6 @@ const (
 	defaultMaxMemoryCalls    = 1000
 	maxRequestIDBytes        = 128
 )
-
-// sandboxTokenIssuanceFailure is returned for sandbox_token_request
-// when an issuer is configured but minting failed. Deliberately generic
-// — the real error is logged, not sent to the harness.
-const sandboxTokenIssuanceFailure = "hairpin failed to issue a sandbox identity token"
 
 // Tuning defaults for the event pump.
 const (
