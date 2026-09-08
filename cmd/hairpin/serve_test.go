@@ -25,6 +25,8 @@ func TestParseServeFlagsRejectsInvalidNumericAndRuntimeValues(t *testing.T) {
 		{name: "billet address without a host", flag: "-billet-addr=:8141", wantErr: "billet address must be host:port"},
 		{name: "billet address with a named port", flag: "-billet-addr=billet.hairpin.svc:rpc", wantErr: "port must be a number"},
 		{name: "billet address with an out-of-range port", flag: "-billet-addr=billet.hairpin.svc:70000", wantErr: "port must be a number"},
+		{name: "harness telemetry endpoint without a port", flag: "-harness-telemetry-endpoint=steeplechase.hairpin.svc", wantErr: "harness telemetry endpoint must be host:port"},
+		{name: "harness telemetry endpoint as a URL", flag: "-harness-telemetry-endpoint=http://steeplechase.hairpin.svc:4317", wantErr: "harness telemetry endpoint"},
 		{name: "unknown telemetry exporter", flag: "-telemetry=jaeger", wantErr: "unknown telemetry exporter"},
 		{name: "unknown telemetry protocol", flag: "-telemetry-protocol=thrift", wantErr: "unknown telemetry protocol"},
 		{name: "sample ratio above one", flag: "-telemetry-sample-ratio=1.5", wantErr: "sample ratio must be between 0 and 1"},
@@ -48,6 +50,27 @@ func TestParseServeFlagsAcceptsBilletAddr(t *testing.T) {
 	}
 	if cfg.BilletAddr != "billet.hairpin.svc:8141" {
 		t.Errorf("billet address = %q", cfg.BilletAddr)
+	}
+}
+
+// The harness's exporter target and hairpin's own are separate flags:
+// setting one must not imply the other.
+func TestParseServeFlagsSeparatesHarnessAndServerTelemetryEndpoints(t *testing.T) {
+	cfg, err := parseServeFlags([]string{
+		"-launcher=none", "-advertise=hairpin.example:8130",
+		"-harness-telemetry-endpoint=steeplechase.hairpin.svc:4317",
+	})
+	if err != nil {
+		t.Fatalf("parseServeFlags: %v", err)
+	}
+	if cfg.HarnessTelemetryEndpoint != "steeplechase.hairpin.svc:4317" {
+		t.Errorf("harness telemetry endpoint = %q", cfg.HarnessTelemetryEndpoint)
+	}
+	if cfg.Telemetry.Endpoint != "" {
+		t.Errorf("hairpin's own telemetry endpoint = %q, want unset", cfg.Telemetry.Endpoint)
+	}
+	if cfg.Telemetry.Enabled() {
+		t.Errorf("telemetry exporter = %q, want no export of hairpin's own signals", cfg.Telemetry.Exporter)
 	}
 }
 

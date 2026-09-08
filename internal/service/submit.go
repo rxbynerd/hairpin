@@ -50,6 +50,7 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 		cfg.Prompt = p.Prompt
 	}
 	applyExecutorDefaults(cfg, s.executorDefaults)
+	applyTraceEmitterDefault(cfg, s.traceEndpoint)
 	if err := validateRunConfig(cfg); err != nil {
 		return fail(profile, telemetry.SubmissionRejected, err)
 	}

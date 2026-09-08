@@ -31,7 +31,7 @@ Request fields (`SubmitJobRequest`):
 |---|---|
 | `prompt` | The task prompt. A non-empty value replaces the prompt in the selected profile or `run_config_json`; when empty, the config must already carry a prompt. |
 | `profile` | Named RunConfig profile to resolve against. Empty selects the server's default profile. Mutually exclusive with `run_config_json`. |
-| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form. Hairpin forces `run_id` to the job ID, applies a non-empty request `prompt`, and fills unset sandbox coordinates on `k8s`/`k8s-sandbox` executors from the server's `-sandbox-*` flags. See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
+| `run_config_json` | A complete stirrup RunConfig in protobuf-JSON form. Hairpin forces `run_id` to the job ID, applies a non-empty request `prompt`, and fills unset sandbox coordinates on `k8s`/`k8s-sandbox` executors from the server's `-sandbox-*` flags, and fills an unset `trace_emitter` from `-harness-telemetry-endpoint`. See [Profiles](../README.md#profiles) for what "no CLI defaulting" means here — `mode`, `provider.type` (or a `providers` map), `executor.type`, `max_turns`, and `timeout` must all be explicit, or `SubmitJob` rejects the request with `invalid_argument`. |
 
 Whichever source the RunConfig comes from, `SubmitJob` also rejects it
 with `invalid_argument` when `tools.controlPlane` names a tool other

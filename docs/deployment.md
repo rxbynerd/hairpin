@@ -27,6 +27,7 @@ point wiring all three together.
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity, its sandbox-namespace Role, and the token-less `stirrup-sandbox` identity the sandbox Pods run as. |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise — see [Redis](#redis). |
 | `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils, on a per-Pod `emptyDir`. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only — see [Billet](#billet). |
+| `steeplechase.yaml` | Deployment + Service | The OTLP collector `-harness-telemetry-endpoint` points at, so each run's trace has somewhere to go — see [Run traces](#run-traces). Its ingest ports authenticate nobody, so the Service is ClusterIP. |
 | `profiles.yaml` | ConfigMap | The RunConfig profile templates mounted at `--profiles`. |
 | `hairpin.yaml` | Deployment + Service | hairpin itself, wired to the identities, Redis, Billet, and profiles above. |
 | `secret.yaml` | Secret | Placeholder provider API keys, exposed to harness Pods via `-harness-secrets`. Replace the value before applying, or generate the Secret out-of-band and remove it from `kustomization.yaml`. |
@@ -41,6 +42,12 @@ point wiring all three together.
   need a harness built from
   [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586)
   until it merges.
+- `steeplechase.yaml`: `containers[0].image` names
+  `ghcr.io/rxbynerd/steeplechase:latest`, which is not published — a
+  pull returns 403 — so point it at an image built from
+  [steeplechase](https://github.com/rxbynerd/steeplechase). To run
+  without run traces, remove the file from `kustomization.yaml` and
+  `-harness-telemetry-endpoint` from `hairpin.yaml`.
 - `billet.yaml`: `containers[0].image` names
   `ghcr.io/rxbynerd/billet:latest`, which is not published until
   [billet PR #1](https://github.com/rxbynerd/billet/pull/1) merges;
@@ -125,6 +132,20 @@ surface: patch `--harness-image` onto the hairpin Deployment with a
 harness built from stirrup PR #586 after each `just deploy`, which
 re-applies `hairpin.yaml`.
 
+steeplechase is built from `${STEEPLECHASE_DIR}/Dockerfile`
+(`STEEPLECHASE_DIR` defaults to `../steeplechase`) on the same path,
+but neither its build nor its rollout is allowed to fail the deploy:
+that Dockerfile builds with a Go toolchain older than its own `go.mod`
+requires, and the published image is not pullable either, so the
+collector may simply be absent. When the build fails but a
+`localhost/steeplechase:dev` image is already in the store — built
+out-of-band, say — that one is loaded and pinned instead, so a deploy
+does not swap a working collector for a tag that cannot be pulled. OTLP export does not block the
+harness, so a run completes regardless — it just has nowhere to send
+its trace. `smoke-test.sh` looks for the job's ID in steeplechase's
+grouped stdout after the job succeeds, and warns rather than fails
+when it is missing.
+
 `memory-smoke-test.sh` submits two jobs and asserts the second job's
 final text quotes what the first saved, then queries Billet directly
 through a second port-forward so a record Billet never received can be
@@ -170,6 +191,10 @@ A profile can describe the isolation it needs while deployment
 configuration supplies default cluster coordinates. A profile that
 pins its own value keeps it, allowing selected runs to use a dedicated
 namespace or stricter RuntimeClass.
+
+`-harness-telemetry-endpoint` fills in one more RunConfig field the
+same way — `trace_emitter`, for the run's own trace. See [Run
+traces](#run-traces).
 
 `-sandbox-namespace` defaults to `-namespace`, but the reference
 manifests deliberately separate them. Sandbox Pods run untrusted agent
@@ -309,6 +334,31 @@ investigation; poll `GetJob` or watch heartbeat events directly.
 Hairpin does not reconcile stale jobs automatically (see
 [issue #3](https://github.com/rxbynerd/hairpin/issues/3)).
 
+### Run traces
+
+`-harness-telemetry-endpoint` is not about hairpin's own telemetry: it
+is the OTLP/gRPC `host:port` hairpin writes into a submitted
+RunConfig's `trace_emitter`, wherever the profile named none, so the
+stirrup harness exports that run's `run`/`turn`/`tool_call` span tree
+somewhere. The endpoint is resolved from the *harness* Pod, and
+hairpin never dials it. A profile that sets its own `trace_emitter`
+keeps it, exactly as with the [sandbox
+coordinates](#sandbox-coordinates).
+
+`hairpin.yaml` points it at `steeplechase.hairpin.svc:4317`, the
+collector `steeplechase.yaml` runs. Because that collector's ingest
+ports carry no authentication or TLS — the same trusted-network
+posture as the rest of the control plane — its Service stays
+`ClusterIP`; put nothing in front of it. Forwarding onwards, with
+credentials, belongs in a `--sink` DSN on steeplechase itself
+([`examples/k8s/README.md`](../examples/k8s/README.md)).
+
+The Deployment is pinned to `replicas: 1` because
+`--stdout-format=grouped` buffers items per `run.id` in-process and
+flushes a block when the run's root span closes. A second replica
+would receive, and flush, only the runs load-balanced to it, splitting
+one run's output across Pods.
+
 ### Telemetry
 
 Traces and metrics are off unless `--telemetry` names an exporter. To
@@ -319,7 +369,9 @@ The signals worth alerting on are `hairpin.job.completions` by status,
 `hairpin.harness.sessions` by disposition (a persistent `bad_token` or
 `unknown_job` rate means a workload is dialling a control plane it has
 no job on), and `hairpin.harness.sessions.active` against the number of
-harness Jobs the cluster shows as running. See
+harness Jobs the cluster shows as running. This is a separate decision
+from [run traces](#run-traces), and a separate endpoint: `--telemetry`
+covers what hairpin itself records, from hairpin's own Pod. See
 [`docs/observability.md`](observability.md) for the full surface.
 
 ### Job retention

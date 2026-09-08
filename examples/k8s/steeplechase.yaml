@@ -1,0 +1,93 @@
+# steeplechase: the OTLP collector every run's trace_emitter points at,
+# named by hairpin's -harness-telemetry-endpoint (see hairpin.yaml).
+# Its ingest ports carry no authentication or TLS, so the Service stays
+# ClusterIP — never expose it through an Ingress or LoadBalancer.
+#
+# With no --sink, stdout is the sink: `kubectl -n hairpin logs
+# deploy/steeplechase` shows every run. --stdout-format=grouped buffers
+# items by run.id and flushes a block when the run's root span closes,
+# so concurrent runs do not interleave. That buffer is in-process,
+# which is why this Deployment is pinned to one replica; a second one
+# would see, and flush, only the runs that load-balanced its way.
+#
+# To publish out of the cluster as well, add --sink DSNs to args
+# (repeatable, and every sink receives every payload):
+#
+#   --sink=otlp+grpc://collector.example.com:4317
+#   --sink=mqtt://$(MQTT_USER):$(MQTT_PASSWORD)@mqtt.example.com:1883/hairpin
+#
+# steeplechase reads no environment variables of its own, but Kubernetes
+# expands $(VAR) in args from the container's env, so sink credentials
+# can come from a Secret rather than the DSN literal.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steeplechase
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: steeplechase
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: steeplechase
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: steeplechase
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: steeplechase
+          image: ghcr.io/rxbynerd/steeplechase:latest
+          args:
+            - --stdout-format=grouped
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 4318
+              name: otlp-http
+            - containerPort: 9090
+              name: admin
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steeplechase
+  namespace: hairpin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: steeplechase
+  ports:
+    - port: 4317
+      targetPort: otlp-grpc
+      name: otlp-grpc
+    - port: 4318
+      targetPort: otlp-http
+      name: otlp-http
+    - port: 9090
+      targetPort: admin
+      name: admin

@@ -73,6 +73,14 @@ type Config struct {
 	// Telemetry configures OpenTelemetry export. Its zero value exports
 	// nothing.
 	Telemetry telemetry.Options
+
+	// HarnessTelemetryEndpoint is the OTLP/gRPC "host:port" written into
+	// a submitted RunConfig's trace_emitter when it names none of its
+	// own. It is the harness's exporter target, resolved from the
+	// harness Pod, and is independent of Telemetry, which configures
+	// hairpin's export of its own signals. Empty leaves trace_emitter
+	// as the profile left it.
+	HarnessTelemetryEndpoint string
 }
 
 // HarnessConfig configures the batch/v1 Job hairpin creates per run.
@@ -132,6 +140,25 @@ func DetectNamespace() string {
 	return strings.TrimSpace(string(raw))
 }
 
+// validateHostPort accepts an empty address, and otherwise requires a
+// "host:port" with a port in range. label names the setting in errors.
+func validateHostPort(label, addr string) error {
+	if addr == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("%s must be host:port: %w", label, err)
+	}
+	if host == "" || port == "" {
+		return fmt.Errorf("%s must be host:port, got %q", label, addr)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("%s port must be a number between 1 and 65535, got %q", label, port)
+	}
+	return nil
+}
+
 // Validate rejects configurations that cannot serve.
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
@@ -140,17 +167,11 @@ func (c *Config) Validate() error {
 	if c.AdvertiseAddr == "" {
 		return fmt.Errorf("advertise address is required (harnesses must know where to dial back)")
 	}
-	if c.BilletAddr != "" {
-		host, port, err := net.SplitHostPort(c.BilletAddr)
-		if err != nil {
-			return fmt.Errorf("billet address must be host:port: %w", err)
-		}
-		if host == "" || port == "" {
-			return fmt.Errorf("billet address must be host:port, got %q", c.BilletAddr)
-		}
-		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-			return fmt.Errorf("billet address port must be a number between 1 and 65535, got %q", port)
-		}
+	if err := validateHostPort("billet address", c.BilletAddr); err != nil {
+		return err
+	}
+	if err := validateHostPort("harness telemetry endpoint", c.HarnessTelemetryEndpoint); err != nil {
+		return err
 	}
 	if c.RedisDB < 0 {
 		return fmt.Errorf("redis database number must be non-negative")

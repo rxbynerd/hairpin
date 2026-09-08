@@ -51,6 +51,7 @@ type Service struct {
 	launcher         launcher.Launcher
 	profiles         *Profiles
 	executorDefaults config.ExecutorDefaults
+	traceEndpoint    string
 	memoryTools      bool
 	log              *slog.Logger
 	tel              *telemetry.Recorder
@@ -66,6 +67,13 @@ type Option func(*Service)
 // RunConfig's sandbox executor inherits when it names none of its own.
 func WithExecutorDefaults(d config.ExecutorDefaults) Option {
 	return func(s *Service) { s.executorDefaults = d }
+}
+
+// WithHarnessTelemetryEndpoint supplies the OTLP endpoint a submitted
+// RunConfig's trace_emitter inherits when it names none of its own. It
+// is the harness's exporter target, unrelated to hairpin's own.
+func WithHarnessTelemetryEndpoint(endpoint string) Option {
+	return func(s *Service) { s.traceEndpoint = endpoint }
 }
 
 // WithMemoryTools declares whether hairpin has a memory backend, and so

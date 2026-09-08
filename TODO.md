@@ -32,6 +32,17 @@ Memory ([`docs/memory.md`](docs/memory.md)) depends on two upstream changes that
   clients, so store and launcher latency is more than the enclosing
   span's duration. Service traces and metrics themselves are built
   ([`docs/observability.md`](docs/observability.md)).
+- Correlate a run's own trace with hairpin's spans. A run's
+  `trace_emitter` is defaulted from `-harness-telemetry-endpoint`
+  rather than named per profile, matching how the `-sandbox-*` flags
+  fill in executor coordinates, but hairpin propagates no trace context
+  into the harness, so the two traces meet only on the job ID.
+- The reference `steeplechase.yaml` names
+  `ghcr.io/rxbynerd/steeplechase:latest`, which is not published (a
+  pull returns 403), and building it locally needs a fix to its own
+  Dockerfile, which pins an older Go toolchain than its `go.mod`
+  requires. Until then, `scripts/dev/deploy.sh` treats the collector as
+  optional.
 
 Current operational constraints and unsupported protocol events are
 documented in [`docs/design.md`](docs/design.md#current-limitations),

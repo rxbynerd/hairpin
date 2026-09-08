@@ -5,8 +5,8 @@
 # in-cluster hairpin discovers its namespace from its projected
 # ServiceAccount and advertises hairpin.<namespace>.svc on its listen
 # port. What remains are the pieces only an operator can name: where
-# Redis and Billet are, which profiles to serve, and the identities the
-# harness and its sandboxes run as.
+# Redis, Billet, and the collector runs export to are, which profiles to
+# serve, and the identities the harness and its sandboxes run as.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,9 +41,13 @@ spec:
             - --sandbox-namespace=hairpin-sandboxes
             - --sandbox-service-account=stirrup-sandbox
             - --billet-addr=billet.hairpin.svc:8141
-            # Add --telemetry=otlp, and an OTEL_EXPORTER_OTLP_ENDPOINT
-            # below, to export traces and metrics to a collector.
-            # See docs/observability.md.
+            # Where the harness exports each run's own trace, injected
+            # into a submitted RunConfig that names no trace_emitter.
+            - --harness-telemetry-endpoint=steeplechase.hairpin.svc:4317
+            # hairpin's own traces and metrics are a separate decision:
+            # add --telemetry=otlp, and an OTEL_EXPORTER_OTLP_ENDPOINT
+            # below, to export those too — steeplechase accepts them on
+            # the same port. See docs/observability.md.
           env:
             # service.instance.id in exported telemetry; ignored when
             # export is off.
