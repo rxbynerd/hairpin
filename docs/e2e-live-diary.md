@@ -84,3 +84,27 @@ nothing), so no server change is needed for the route itself.
 4. Run: fake-provider smoke test (baseline after redeploy), a plain
    Cerebras run, a memory run, then the git run against
    `springboard-chrome` pushing to a branch.
+
+## 2026-09-08 23:00: redeploy onto the existing cluster
+
+Commits `78a4a0c`, `0bdc745`, `d2aac15` on `e2e-fixes` carry the
+changes below.
+
+- `deploy.sh` ran with `BILLET_DIR` and `STEEPLECHASE_DIR` pointed at
+  nowhere so the published images were pulled. `steeplechase:main`
+  pulled and rolled out on the first try; the collector no longer needs
+  a hand-built image. The egress proxy Deployment in `hairpin-sandboxes`
+  came up from `stirrup:latest` and logged
+  `egress proxy listening ... allowlist_entries=1`.
+- The harness image is back to the default `ghcr.io/rxbynerd/stirrup:latest`;
+  the `localhost/stirrup:cp-tools` patch is gone.
+- `provider.sh cerebras https://api.cerebras.ai/v1 qwen-3.8-27b` ran
+  from the tmux session with the key in `HAIRPIN_PROVIDER_API_KEY`, so
+  1Password was never prompted again. hairpin logged
+  `memory tools enabled` and `sandbox identity token issuance enabled`
+  on restart.
+- `haybale.sh` with no checkout pulled `haybale:latest`. The `git`
+  profile it writes now uses `allowlist` mode through the proxy.
+- `haybale-github.sh` stored the App key, and haybale started with
+  `upstreams=2`: the init container's `0600` copy passed the
+  permission check on the first attempt.
