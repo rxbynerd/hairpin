@@ -87,34 +87,16 @@ else
     log "no Billet checkout at ${BILLET_DIR}; the published image will be pulled"
 fi
 
-# steeplechase is best-effort. Its Dockerfile builds with a Go toolchain
-# older than its own go.mod requires, so the build fails until that is
-# fixed upstream, and its published image is not pullable — which makes
-# an image already in the store worth reusing, since the alternative is
-# leaving the Deployment pointed at a tag that cannot be pulled. A run
-# whose trace has nowhere to go still completes: OTLP export does not
-# block the harness.
-if [ -f "${STEEPLECHASE_DIR}/Dockerfile" ]; then
+if [ -f "${STEEPLECHASE_DIR}/Containerfile" ]; then
     log "building ${STEEPLECHASE_IMAGE} from ${STEEPLECHASE_DIR}..."
-    if (cd "${STEEPLECHASE_DIR}" && "${ENGINE}" build -t "${STEEPLECHASE_IMAGE}" -f Dockerfile .); then
-        steeplechase_local=true
-    else
-        warn "the steeplechase build failed"
-    fi
-else
-    log "no steeplechase checkout at ${STEEPLECHASE_DIR}"
-fi
-if [ "${steeplechase_local}" = false ] && "${ENGINE}" image exists "${STEEPLECHASE_IMAGE}"; then
-    log "reusing the ${STEEPLECHASE_IMAGE} already in the image store"
-    steeplechase_local=true
-fi
-if [ "${steeplechase_local}" = true ]; then
+    (cd "${STEEPLECHASE_DIR}" && "${ENGINE}" build -t "${STEEPLECHASE_IMAGE}" -f Containerfile .)
+
     log "loading ${STEEPLECHASE_IMAGE} into the cluster..."
     "${ENGINE}" save --format oci-archive -o "${steeplechase_archive}" "${STEEPLECHASE_IMAGE}"
     kind load image-archive "${steeplechase_archive}" --name "${CLUSTER_NAME}"
+    steeplechase_local=true
 else
-    warn "no steeplechase image is available; its Deployment keeps the published" \
-         "reference and runs may have no collector to export to"
+    log "no steeplechase checkout at ${STEEPLECHASE_DIR}; the published image will be pulled"
 fi
 
 log "applying manifests..."
@@ -122,6 +104,7 @@ log "applying manifests..."
     -f "${REPO_ROOT}/examples/k8s/namespace.yaml" \
     -f "${REPO_ROOT}/examples/k8s/rbac.yaml" \
     -f "${REPO_ROOT}/examples/k8s/rbac-sandbox.yaml" \
+    -f "${REPO_ROOT}/examples/k8s/egress-proxy.yaml" \
     -f "${REPO_ROOT}/examples/k8s/redis.yaml" \
     -f "${REPO_ROOT}/examples/k8s/billet.yaml" \
     -f "${REPO_ROOT}/examples/k8s/steeplechase.yaml" \
@@ -162,13 +145,8 @@ fi
 log "waiting for rollouts..."
 "${KUBECTL[@]}" -n hairpin rollout status deployment/redis --timeout=120s
 "${KUBECTL[@]}" -n hairpin rollout status deployment/billet --timeout=120s
-# Telemetry is not on the path a smoke test asserts, so a steeplechase
-# that cannot pull its image holds nothing else up.
-if [ "${steeplechase_local}" = true ]; then
-    "${KUBECTL[@]}" -n hairpin rollout status deployment/steeplechase --timeout=120s
-elif ! "${KUBECTL[@]}" -n hairpin rollout status deployment/steeplechase --timeout=30s; then
-    warn "steeplechase is not ready; runs will export their traces nowhere"
-fi
+"${KUBECTL[@]}" -n hairpin rollout status deployment/steeplechase --timeout=120s
+"${KUBECTL[@]}" -n hairpin-sandboxes rollout status deployment/stirrup-egress-proxy --timeout=120s
 # The provider reads server.py once at start, so a changed ConfigMap
 # only takes effect on a fresh Pod.
 "${KUBECTL[@]}" -n hairpin rollout restart deployment/fake-provider

@@ -4,6 +4,7 @@ resources:
   - namespace.yaml
   - rbac.yaml
   - rbac-sandbox.yaml
+  - egress-proxy.yaml
   - redis.yaml
   - billet.yaml
   - steeplechase.yaml
