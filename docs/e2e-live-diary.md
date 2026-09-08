@@ -182,3 +182,25 @@ the fake-provider smoke tests, and `save_memory` returned
 `{"accepted": true}` with a memory ID. The model wrote in its final
 text that "the guard appears to block any command string containing
 curl", so the quirk is visible enough for a model to route around.
+
+## 2026-09-08 23:16: memory recall, permissions, cancellation
+
+- **Memory round trip closed.** A second `cerebras` job asked for the
+  git version an earlier session recorded, with no shell allowed.
+  `search_memory` returned the record saved a minute earlier and the
+  model quoted it verbatim, including the guard note. 9 s wall.
+- **`ask-upstream` works with a live model.** A `run_config_json`
+  submit (same provider, `permissionPolicy: ask-upstream`, timeout
+  90 s) produced four `permission_request` events, one per
+  `run_command`. The first was denied through `AnswerPermission` with
+  the reason "use hello.txt instead"; the model read the refusal,
+  switched file names, and the run succeeded in 18 s.
+  `ListPermissionRequests` shows all four with their inputs and the
+  denial reason, so the permission record is the one place in
+  hairpin's own store where a tool's input is visible.
+- **Cancellation lands at the turn boundary, as documented.** A
+  counting job was cancelled after its first tool result; the model
+  had batched ten parallel `run_command` calls into one turn, so the
+  harness finished all ten (each with `sleep 2`) before reporting
+  `done` with `stop_reason: cancelled`. A profile that allows parallel
+  tool calls makes cancel latency proportional to the batch.
