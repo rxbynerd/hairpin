@@ -22,21 +22,17 @@ harness ──tool_result_request{tool_name:"search_memory", input}──▶ hai
    └──tool_result_response{content, is_error}◀──────────────────── billet
 ```
 
-Two upstream changes carry this feature and are not yet merged:
+Two upstream changes carry this feature, both merged:
 
 - The `tools.controlPlane` RunConfig surface comes from
   [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586).
-  Hairpin's vendored `proto/harness/v1/harness.proto` is synced from
-  that branch (head `503fca30`), and a harness must be built from it
-  to register the tools; the published `ghcr.io/rxbynerd/stirrup:latest`
-  image predates it. Point `-harness-image` at a harness built from
-  the PR until it merges.
+  Hairpin's vendored `proto/harness/v1/harness.proto` matches stirrup
+  main, and the published `ghcr.io/rxbynerd/stirrup:latest` image
+  registers the tools.
 - Billet's container image comes from
-  [billet PR #1](https://github.com/rxbynerd/billet/pull/1).
-  `ghcr.io/rxbynerd/billet:latest`, the image
-  [`examples/k8s/billet.yaml`](../examples/k8s/billet.yaml) names,
-  does not exist until it merges; build Billet locally as described
-  under [Deployment](#deployment).
+  [billet PR #1](https://github.com/rxbynerd/billet/pull/1), published
+  as `ghcr.io/rxbynerd/billet:latest`, the image
+  [`examples/k8s/billet.yaml`](../examples/k8s/billet.yaml) names.
 
 ## Configuration
 
@@ -249,26 +245,17 @@ in the `hairpin` namespace with only its RPC listener enabled
 and no API server token. Hairpin's Deployment adds
 `--billet-addr=billet.hairpin.svc:8141`, and the reference `default`
 profile declares the tools, so applying the reference manifests with
-`kubectl apply -k` is enough for the default profile to use memory once
-an image is available. For memory that survives a Billet restart,
-replace the `emptyDir` with a PersistentVolumeClaim.
-
-The manifest names `ghcr.io/rxbynerd/billet:latest`, which is not
-published until billet PR #1 merges. Until then, point
-`containers[0].image` at a Billet image built from that branch, or use
-the development path below.
+`kubectl apply -k` is enough for the default profile to use memory. For memory that
+survives a Billet restart, replace the `emptyDir` with a
+PersistentVolumeClaim.
 
 ### The development cluster
 
 `just deploy` builds Billet when `${BILLET_DIR}/Containerfile` exists
 (`BILLET_DIR` defaults to `../billet`, a sibling checkout), loads the
 image into the kind node, and pins the Deployment to it. Without a
-checkout it applies the manifest unchanged and the Billet rollout waits
-on a pull of the unpublished image; `deploy.sh` then fails at
-`rollout status deployment/billet`. The published harness image has the
-same problem from the stirrup side: patch `--harness-image` onto the
-hairpin Deployment with a harness built from stirrup PR #586 after each
-`just deploy`, which re-applies `hairpin.yaml`.
+checkout it applies the manifest unchanged and the published image is
+pulled.
 
 The fake provider drives a run that searches memory, saves a memory
 naming its own prompt, runs a sandbox command, and finishes by quoting

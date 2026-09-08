@@ -153,11 +153,8 @@ trusted operators.
   RunConfig that enables batch execution does not fail validation at
   submit time; see
   [issue #1](https://github.com/rxbynerd/hairpin/issues/1).
-- Memory depends on two unmerged upstream changes:
-  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) for
-  the `tools.controlPlane` RunConfig surface and
-  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) for a
-  published Billet image. See [`docs/memory.md`](memory.md).
+- Memory is answered for the two Billet-backed tools only; the
+  contract and its limits are in [`docs/memory.md`](memory.md).
 - Only one hairpin replica is safe because the live session registry is
   in-process; see [issue #4](https://github.com/rxbynerd/hairpin/issues/4).
 - API/UI authentication, authorization, and transport TLS are not built

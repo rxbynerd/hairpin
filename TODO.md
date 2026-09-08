@@ -13,15 +13,16 @@ is tracked in GitHub rather than as a session log:
 ## Protocol coverage
 
 - [Reject unsupported RunConfig capabilities during submission](https://github.com/rxbynerd/hairpin/issues/1) instead of allowing a job to reach a protocol request Hairpin cannot answer.
-- Reach haybale from a sandbox on a NetworkPolicy-enforcing CNI: deploy stirrup's `examples/k8s/egress-proxy/` into the sandbox namespace and switch the `git` profile to `allowlist` mode, or add an in-cluster-services network mode to stirrup. Until then `git-smoke-test` cannot pass on kind (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one)).
-- Point haybale at a GitHub App upstream instead of the development gitea, and narrow `haybale-policy` from the `hp-*` ceiling to per-caller rules.
+- Wait on stirrup injecting lowercase `http_proxy`/`https_proxy`/`no_proxy` beside the uppercase names (branch `fix/lowercase-proxy-env`). git, through libcurl, honours only the lowercase spelling for plain-http URLs, so a clone through a plain-HTTP haybale in `allowlist` mode hangs until the tool timeout and `git-smoke-test` needs a harness image built from that branch (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-and-the-egress-proxy)).
+- Narrow `haybale-policy` from the `hp-*` ceiling to per-caller rules. `scripts/dev/haybale-github.sh` widens it further still, to every repository under one GitHub owner.
+- stirrup's harness emits no `tool_call` event on the control-plane stream, only `tool_result`, so a run's timeline holds results with no inputs and auditing a call means reading the harness Pod log. Hairpin records the event when it arrives; emitting it is upstream.
 - Rotate the sandbox-token signing key without a haybale restart; haybale reads the JWKS file once at startup.
 - Add follow-up turns and batch execution only with end-to-end lifecycle and cancellation semantics. Asynchronous tool results are answered for the two memory tools only.
 - [Reconcile permission state after harness-side timeouts](https://github.com/rxbynerd/hairpin/issues/2) so a late API response cannot appear effective after the harness has moved on.
 
 ## Shared memory
 
-Memory ([`docs/memory.md`](docs/memory.md)) depends on two upstream changes that are not yet merged: [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) for the `tools.controlPlane` RunConfig surface and [billet PR #1](https://github.com/rxbynerd/billet/pull/1) for a published Billet image. Re-vendor the harness proto from stirrup main once the first merges.
+Memory ([`docs/memory.md`](docs/memory.md)) runs on published images: `ghcr.io/rxbynerd/stirrup:latest` carries the `tools.controlPlane` RunConfig surface from [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586), and `ghcr.io/rxbynerd/billet:latest` pulls.
 
 - Recall and save memory without the model's cooperation: search at task start and save an outcome at `done`, rather than relying on the tool descriptions steering the model to call them.
 - Partition memory per profile or per caller instead of one Billet namespace per deployment, once Billet's contract allows a caller-supplied namespace.
@@ -39,12 +40,6 @@ Memory ([`docs/memory.md`](docs/memory.md)) depends on two upstream changes that
   rather than named per profile, matching how the `-sandbox-*` flags
   fill in executor coordinates, but hairpin propagates no trace context
   into the harness, so the two traces meet only on the job ID.
-- The reference `steeplechase.yaml` names
-  `ghcr.io/rxbynerd/steeplechase:latest`, which is not published (a
-  pull returns 403), and building it locally needs a fix to its own
-  Dockerfile, which pins an older Go toolchain than its `go.mod`
-  requires. Until then, `scripts/dev/deploy.sh` treats the collector as
-  optional.
 
 Current operational constraints and unsupported protocol events are
 documented in [`docs/design.md`](docs/design.md#current-limitations),

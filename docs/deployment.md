@@ -25,6 +25,7 @@ point wiring all three together.
 | `namespace.yaml` | Namespace ×2 | `hairpin` (server, Redis, harness Jobs) and `hairpin-sandboxes` (the Pods agent commands run in). |
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | The `hairpin` identity and the `create` verb its Job launcher uses. |
 | `rbac-sandbox.yaml` | ServiceAccount ×2 + Role + RoleBinding | The `stirrup-harness` identity, its sandbox-namespace Role, and the token-less `stirrup-sandbox` identity the sandbox Pods run as. |
+| `egress-proxy.yaml` | ConfigMap + Deployment + Service | stirrup's egress allowlist proxy, running in the sandbox namespace. A sandbox Pod in `allowlist` network mode reaches everything, haybale included, through it — see [Sandbox egress](#sandbox-egress-and-the-allowlist-proxy). |
 | `redis.yaml` | Deployment + Service | Single-replica, unpersisted Redis for `internal/store/redisstore`. Fine for a kind cluster; swap for a managed instance otherwise — see [Redis](#redis). |
 | `billet.yaml` | Deployment + Service + NetworkPolicy | Billet, the store behind the `search_memory` and `save_memory` tools hairpin fulfils, on a per-Pod `emptyDir`. Its RPC endpoint authenticates nobody, so the NetworkPolicy admits hairpin's Pods only — see [Billet](#billet). |
 | `steeplechase.yaml` | Deployment + Service | The OTLP collector `-harness-telemetry-endpoint` points at, so each run's trace has somewhere to go — see [Run traces](#run-traces). Its ingest ports authenticate nobody, so the Service is ClusterIP. |
@@ -40,22 +41,22 @@ point wiring all three together.
 - `hairpin.yaml`: `containers[0].image` — build and push a hairpin
   image, then point this at it. The stirrup images are already
   defaulted to their published tags; override with `-harness-image` and
-  `-sandbox-image` to pin a digest or use a mirror. The memory tools
-  need a harness built from
-  [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586)
-  until it merges.
+  `-sandbox-image` to pin a digest or use a mirror.
+  `ghcr.io/rxbynerd/stirrup:latest` carries the `tools.controlPlane`
+  surface the memory tools need.
 - `steeplechase.yaml`: `containers[0].image` names
-  `ghcr.io/rxbynerd/steeplechase:latest`, which is not published — a
-  pull returns 403 — so point it at an image built from
-  [steeplechase](https://github.com/rxbynerd/steeplechase). To run
-  without run traces, remove the file from `kustomization.yaml` and
+  `ghcr.io/rxbynerd/steeplechase:main`. steeplechase publishes `edge`,
+  `main`, and `sha-<short>` tags and no `latest`, so pin one of those
+  (or an image of your own) rather than assuming `latest` resolves. To
+  run without run traces, remove the file from `kustomization.yaml` and
   `-harness-telemetry-endpoint` from `hairpin.yaml`.
-- `billet.yaml`: `containers[0].image` names
-  `ghcr.io/rxbynerd/billet:latest`, which is not published until
-  [billet PR #1](https://github.com/rxbynerd/billet/pull/1) merges;
-  point it at a Billet image built from that branch. Replace the
-  `emptyDir` with a PersistentVolumeClaim for memory that outlives the
-  Pod.
+- `billet.yaml`: `containers[0].image` names the published
+  `ghcr.io/rxbynerd/billet:latest`. Replace the `emptyDir` with a
+  PersistentVolumeClaim for memory that outlives the Pod.
+- `egress-proxy.yaml`: the `stirrup-egress-allowlist` ConfigMap, which
+  ships with haybale's `host:port` alone. Every destination a sandbox
+  in `allowlist` mode may reach belongs there — see [Sandbox
+  egress](#sandbox-egress-and-the-allowlist-proxy).
 - `profiles.yaml`: the shipped `default` profile names a model, an
   `ask-upstream` permission policy, and the two memory tools. Adjust
   it, or add profiles, for what your callers actually submit. A
@@ -74,12 +75,11 @@ point wiring all three together.
   its output; `key.pem` as shipped is not a PEM, and hairpin rejects an
   unparseable key at startup the same way haybale fails fast on a bad
   key or JWKS file. See [Deploying haybale](#deploying-haybale).
-- `haybale.yaml`: `containers[0].image` — no haybale image is
-  published, so build one from a checkout; the upstream it proxies to,
-  which ships wired to the dev-only in-cluster gitea from
-  `scripts/dev/gitea.yaml` with a commented `github-app` block ready
-  for a real GitHub App; the `haybale-gitea-token` Secret, another
-  placeholder; and the `haybale-policy` ConfigMap, whose shipped `hp-*`
+- `haybale.yaml`: the upstream it proxies to, which ships wired to the
+  dev-only in-cluster gitea from `scripts/dev/gitea.yaml` with a
+  commented `github-app` block ready for a real GitHub App; the
+  `haybale-gitea-token` Secret, another placeholder; and the
+  `haybale-policy` ConfigMap, whose shipped `hp-*`
   ceiling grants every run read and write on every repo the upstream
   credential can reach. Drop both `sandbox-token.yaml` and
   `haybale.yaml` from the Kustomization and remove the
@@ -153,26 +153,24 @@ Billet gets the same treatment when `${BILLET_DIR}/Containerfile`
 exists (`BILLET_DIR` defaults to `../billet`, a sibling checkout):
 `deploy.sh` builds `localhost/billet:dev`, loads it into the node, and
 pins the Billet Deployment to it. Without a checkout the manifest is
-applied unchanged, and because `ghcr.io/rxbynerd/billet:latest` is not
-yet published, `deploy.sh` fails waiting on the Billet rollout. The
-published harness image likewise predates the control-plane tool
-surface: patch `--harness-image` onto the hairpin Deployment with a
-harness built from stirrup PR #586 after each `just deploy`, which
-re-applies `hairpin.yaml`.
+applied unchanged and `ghcr.io/rxbynerd/billet:latest` is pulled.
+steeplechase follows the same rule from
+`${STEEPLECHASE_DIR}/Containerfile` (`STEEPLECHASE_DIR` defaults to
+`../steeplechase`), falling back to the published
+`ghcr.io/rxbynerd/steeplechase:main`. The published harness image
+carries the control-plane tool surface, so the memory tools need no
+`--harness-image` override.
 
-steeplechase is built from `${STEEPLECHASE_DIR}/Dockerfile`
-(`STEEPLECHASE_DIR` defaults to `../steeplechase`) on the same path,
-but neither its build nor its rollout is allowed to fail the deploy:
-that Dockerfile builds with a Go toolchain older than its own `go.mod`
-requires, and the published image is not pullable either, so the
-collector may simply be absent. When the build fails but a
-`localhost/steeplechase:dev` image is already in the store — built
-out-of-band, say — that one is loaded and pinned instead, so a deploy
-does not swap a working collector for a tag that cannot be pulled. OTLP export does not block the
-harness, so a run completes regardless — it just has nowhere to send
-its trace. `smoke-test.sh` looks for the job's ID in steeplechase's
-grouped stdout after the job succeeds, and warns rather than fails
-when it is missing.
+`deploy.sh` also applies `egress-proxy.yaml` and waits on its rollout
+in `hairpin-sandboxes`, since a profile in `allowlist` mode has no
+route anywhere without it.
+
+OTLP export does not block the harness, so a run completes whatever
+state the collector is in — it just has nowhere to send its trace.
+`smoke-test.sh` looks for the job's ID in steeplechase's grouped
+stdout after the job succeeds, and warns rather than fails when it is
+missing; the collector groups its flushes, so that warning can be the
+check racing a delivery that did arrive.
 
 `memory-smoke-test.sh` submits two jobs and asserts the second job's
 final text quotes what the first saved, then queries Billet directly
@@ -184,20 +182,38 @@ scripts pin their `kubectl` context to `HAIRPIN_KUBE_CONTEXT`
 whatever the shell last selected, because the manifests replace
 cluster state by name.
 
-`haybale.sh` builds haybale from a local checkout (`HAYBALE_DIR`),
-loads it into the node, deploys `scripts/dev/gitea.yaml` as a throwaway in-cluster
-git host, bootstraps it with an admin user, an access token and a seed
-repo, and adds a `git` profile pointing at both. `git-smoke-test.sh`
+`haybale.sh` builds haybale from a local checkout when
+`${HAYBALE_DIR}/Containerfile` exists and pulls
+`ghcr.io/rxbynerd/haybale:latest` otherwise, deploys
+`scripts/dev/gitea.yaml` as a throwaway in-cluster git host,
+bootstraps it with an admin user, an access token and a seed repo, and
+adds a `git` profile pointing at both. That profile uses `allowlist`
+network mode through `stirrup-egress-proxy`, which is what lets the
+sandbox reach haybale at all — see [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy). `git-smoke-test.sh`
 then submits one job through that profile and asserts the seed repo's
 `main` moved, so a run that reported success without pushing still
 fails. `deploy.sh` regenerates the sandbox-token keypair and re-applies
 the profiles ConfigMap on every run, so re-run `haybale.sh` after every
-`just deploy`, the same way `openrouter.sh` has to be re-run. Note that
-`git-smoke-test` cannot pass on kind as shipped: the `git` profile uses
-`executor.network.mode: "none"`, and the `kindnetd` the dev cluster
-ships enforces the resulting deny-all NetworkPolicy, cutting the
-sandbox off from haybale — the gap and what closing it needs are in
-[`examples/k8s/README.md`](../examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one).
+`just deploy`, the same way `openrouter.sh` has to be re-run.
+
+`just haybale-github` ([`scripts/dev/haybale-github.sh`](../scripts/dev/haybale-github.sh))
+adds a GitHub App upstream to the deployed haybale, reading
+`HAIRPIN_GITHUB_APP_ID`, `HAIRPIN_GITHUB_APP_KEY` (a path to the App's
+PEM), and `HAIRPIN_GITHUB_OWNER` from the environment. It stores the
+key in the `haybale-github-app-key` Secret, rewrites `haybale-config`
+with a `github.com` upstream of `type: github-app` beside the gitea
+one, widens `haybale-policy` to `github.com/<owner>/*`, and restarts
+haybale. Runs then submit with
+`{"profile": "<name>-git", "repoScope": ["github.com/<owner>/<repo>"], "prompt": "..."}`.
+Both ConfigMaps are replaced wholesale, so re-run this after
+`haybale.sh` re-applies the manifest.
+
+`git-smoke-test` needs a harness image built from stirrup's
+`fix/lowercase-proxy-env` branch until that change is published: a
+clone through the egress proxy otherwise hangs on the proxy
+environment variables' spelling — see [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy).
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
@@ -208,6 +224,15 @@ hairpin — profiles are loaded once at startup. Submit with
 `{"profile": "openrouter", "prompt": "..."}`. `deploy.sh` recreates the
 Secret and profiles ConfigMap without these additions, so re-run the
 script after every deploy.
+
+`just provider <name> <base-url> <model> [op-ref]` /
+[`scripts/dev/provider.sh`](../scripts/dev/provider.sh) generalises
+that to any openai-compatible provider, taking the key from
+`HAIRPIN_PROVIDER_API_KEY` when it is set and from 1Password
+otherwise. It writes two profiles, `<name>` and `<name>-git` (the same
+run plus a haybale-proxied git identity), both in `allowlist` mode with
+the memory tools declared, and needs the same re-run after every
+deploy.
 
 The kind cluster installs no gVisor RuntimeClass, so sandbox Pods run
 under the cluster default runtime and the harness logs an isolation
@@ -407,6 +432,49 @@ readable `timeout` (should not happen — `SubmitJob` requires one), the
 launcher falls back to a 3600s baseline plus the same slack rather
 than leaving the Job unbounded.
 
+### Sandbox egress and the allowlist proxy
+
+A sandbox Pod's egress is whatever its profile's
+`executor.network.mode` allows, and the harness installs a
+NetworkPolicy per Pod to enforce it:
+
+- `"none"` installs a deny-all policy. On a CNI that enforces
+  NetworkPolicy that blocks *everything*, in-cluster services
+  included, so a sandbox in this mode cannot reach haybale either.
+  It is the mode for a cluster whose CNI does not enforce policy.
+- `"allowlist"` admits egress to DNS and to Pods labelled
+  `app=stirrup-egress-proxy` in the sandbox's own namespace, and
+  injects proxy environment variables pointing at
+  `executor.k8sEgressProxyUrl`. The proxy is then the sandbox's only
+  route anywhere.
+
+`examples/k8s/egress-proxy.yaml` runs that proxy — stirrup's own
+`egress-proxy` subcommand — in `hairpin-sandboxes`, with a ConfigMap
+allowlist and a Service on port 8080. It forwards plain HTTP as well
+as CONNECT, so a plain-HTTP in-cluster destination works through it.
+The allowlist ships with `haybale.hairpin.svc:8466` alone, which is
+what makes git through haybale reachable; it is read once at startup,
+so roll the Deployment after changing it, and an empty allowlist
+denies everything.
+
+A profile opts in by setting both `executor.network.mode` and
+`executor.k8sEgressProxyUrl`
+(`http://stirrup-egress-proxy.hairpin-sandboxes.svc:8080` for the
+reference manifests). Hairpin passes the URL through to the harness
+untouched and only checks that it is paired with `allowlist` mode, so
+the proxy's address is a profile-level decision, not a server flag.
+`profiles.yaml`'s reference `git` profile ships in `allowlist` mode
+with the proxy URL above, as do the profiles `scripts/dev/haybale.sh`
+and `scripts/dev/provider.sh` generate.
+
+One upstream caveat applies to git specifically: stirrup's executors
+inject only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`,
+while git (through libcurl) honours only lowercase `http_proxy` for
+plain-http URLs. Git through a plain-HTTP haybale therefore hangs until
+stirrup ships the lowercase variants (branch
+`fix/lowercase-proxy-env`); until then the harness image must be built
+from that branch.
+
 ### Deploying haybale
 
 A profile that gives a sandbox git access does so through
@@ -419,13 +487,24 @@ credential the sandbox never sees.
 `examples/k8s/haybale.yaml` and `examples/k8s/sandbox-token.yaml` are
 the reference manifests; `examples/k8s/README.md`'s [Deploying
 haybale](../examples/k8s/README.md#deploying-haybale) section has the
-full walkthrough, including the network-mode tradeoff a sandbox Pod
-needs to actually reach haybale on a NetworkPolicy-enforcing cluster.
-For the kind development loop, `just haybale` (`scripts/dev/haybale.sh`)
-builds haybale from a local checkout, stands up a throwaway in-cluster
-git host, and wires a `git` profile at both — followed by `just
-git-smoke-test` to prove a clone/commit/push round trip through the
-proxy.
+full walkthrough, and the network mode a sandbox Pod needs to reach
+haybale at all is in [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy). For the kind
+development loop, `just haybale` (`scripts/dev/haybale.sh`) deploys
+haybale, stands up a throwaway in-cluster git host, and wires a `git`
+profile at both — followed by `just git-smoke-test` to prove a
+clone/commit/push round trip through the proxy.
+
+A `github-app` upstream reads its private key from a file, and haybale
+refuses a key file carrying any group or other permission bit. A
+Secret volume cannot produce an owner-only file for a non-root
+container — `fsGroup` lands it at `0440` — so `haybale.yaml` runs an
+init container that copies `private-key.pem` from the optional
+`haybale-github-app-key` Secret into a memory-backed `emptyDir` at
+`0600`, which is the path the upstream's `privateKeyPath` names. With
+no such Secret the init container copies nothing and only the other
+upstreams are usable. `just haybale-github` wires all of this into the
+development cluster.
 
 ## Redis
 
