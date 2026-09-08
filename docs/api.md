@@ -100,22 +100,26 @@ curl -s http://localhost:8130/hairpin.v1.JobService/ListJobs \
 
 Streams a job's recorded events from a resume position, then follows
 the live stream until the job reaches a terminal status or the caller
-disconnects. Server streaming, so it needs a client that reads a
-chunked/streamed response — curl works for a quick look but will
-block until the job finishes or the connection is cut.
+disconnects. Server streaming, so it needs a Connect, gRPC, or
+gRPC-Web client: the unary `application/json` content type the other
+methods accept is refused here with `415 Unsupported Media Type`.
+Connect's streaming JSON variant is `application/connect+json`, and
+every message on both sides is enveloped as a one-byte flags field, a
+four-byte big-endian length, and the JSON body, so a bare `curl -d`
+is not enough. For a quick look from the shell, read the web UI's SSE
+feed at `/jobs/{id}/events` instead, which serves the same events as
+`event:`/`data:` lines and needs no framing:
+
+```sh
+curl -s --no-buffer http://localhost:8130/jobs/hp-01j.../events
+```
 
 | Field | Meaning |
 |---|---|
 | `id` | Job ID. |
 | `after_id` | Resume after this event ID; empty streams from the beginning. |
 
-```sh
-curl -s --no-buffer http://localhost:8130/hairpin.v1.JobService/WatchJob \
-  -H 'Content-Type: application/json' \
-  -d '{"id": "hp-01j..."}'
-```
-
-Each response frame carries one `JobEvent`:
+Each response message carries one `JobEvent`:
 
 ```json
 {"event": {"id": "1735500000000-0", "type": "text_delta", "payloadJson": "{\"type\":\"text_delta\",\"text\":\"...\"}", "at": "2026-08-29T09:00:01Z"}}
