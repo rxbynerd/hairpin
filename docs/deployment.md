@@ -551,6 +551,9 @@ creation; a stored RunConfig that cannot be parsed, or that carries no
 timeout, falls back to one hour plus slack. A harness that connects
 concurrently wins the race: the reaper re-checks the job is still
 `awaiting_harness` inside the same atomic update that writes `failed`.
+A settled job is counted in `hairpin.job.completions` under the
+`harness_never_connected` stop reason, so the rate is alertable — see
+[docs/observability.md](observability.md#metrics).
 Reconciling a job whose harness disappears mid-run is still open, see
 [issue #3](https://github.com/rxbynerd/hairpin/issues/3).
 

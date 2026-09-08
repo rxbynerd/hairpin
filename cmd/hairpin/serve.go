@@ -243,7 +243,8 @@ func serve(cfg *config.Config) error {
 	// The reaper always runs its awaiting_harness sweep, catching a
 	// harness that never dials back regardless of retention settings;
 	// its job-deletion sweep is a no-op unless cfg.Retention > 0.
-	rp := reaper.New(st, cfg.Retention, cfg.Harness.ActiveDeadlineSlack, logger)
+	rp := reaper.New(st, cfg.Retention, cfg.Harness.ActiveDeadlineSlack, logger,
+		reaper.WithTelemetry(tel))
 	reaperCtx, cancelReaper := context.WithCancel(context.Background())
 	defer cancelReaper()
 	var reaperWG sync.WaitGroup

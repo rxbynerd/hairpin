@@ -167,9 +167,15 @@ metrics for both RPC surfaces:
 Notes on reading them:
 
 - `hairpin.job.completions` counts every terminal transition, including
-  jobs that failed to launch and jobs cancelled before any harness
-  connected. `hairpin.job.run.duration` measures assignment to terminal
-  status, so it covers only jobs that actually ran.
+  jobs that failed to launch, jobs cancelled before any harness
+  connected, and jobs the reaper settled because their harness never
+  dialled back. `hairpin.job.run.duration` measures assignment to
+  terminal status, so it covers only jobs that actually ran.
+- `hairpin.job.stop_reason` is the harness's own `done.stop_reason`
+  except for `harness_never_connected`, which hairpin's reaper records
+  and stirrup never sends: that series alone is reaper-settled jobs.
+  Alert on it rising, which means launched harness Pods are not
+  reaching the control plane.
 - `hairpin.session.disposition` is the outcome of one inbound
   `RunTask` stream: `assigned`, or one of `closed_before_ready`,
   `not_ready`, `no_session_id`, `unknown_job`, `bad_token`,
@@ -185,7 +191,8 @@ Notes on reading them:
 
 Job IDs, request IDs, harness event types, stop reasons, and tool names
 are supplied by callers or by the harness, so none of them label a
-metric as sent:
+metric as sent (hairpin's own `harness_never_connected` stop reason is
+the one value the harness cannot originate):
 
 - Identifiers (`hairpin.job.id`, `hairpin.request.id`) appear on spans
   only.

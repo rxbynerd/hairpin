@@ -18,6 +18,7 @@ import (
 	harnessv1 "github.com/rxbynerd/hairpin/gen/harness/v1"
 	"github.com/rxbynerd/hairpin/internal/job"
 	"github.com/rxbynerd/hairpin/internal/store"
+	"github.com/rxbynerd/hairpin/internal/telemetry"
 )
 
 // eventStatusChange is the synthetic timeline event type appended when
@@ -47,6 +48,7 @@ const (
 type Reaper struct {
 	store store.Store
 	log   *slog.Logger
+	tel   *telemetry.Recorder
 
 	// retention is how long a terminal job is kept after FinishedAt
 	// before it is deleted. <=0 disables deletion; the
@@ -82,6 +84,13 @@ func WithPageSize(n int) Option {
 			r.pageSize = n
 		}
 	}
+}
+
+// WithTelemetry records the terminal transitions the awaiting_harness
+// sweep makes, so a reaper-settled job is counted like any other
+// completion. A nil recorder records nothing.
+func WithTelemetry(rec *telemetry.Recorder) Option {
+	return func(r *Reaper) { r.tel = rec }
 }
 
 // New returns a Reaper backed by st. retention <=0 disables
@@ -218,6 +227,10 @@ func (r *Reaper) failStuckHarness(ctx context.Context, id string) (moved bool, e
 	}
 	if moved {
 		r.appendStatusEvent(ctx, id, job.StatusFailed, stuckHarnessError)
+		// The job never left awaiting_harness, so it has no
+		// assignment-to-terminal span to record: run duration is zero,
+		// as it is for a launch failure.
+		r.tel.JobCompleted(ctx, job.StatusFailed, telemetry.StopHarnessNeverConnected, 0)
 	}
 	return moved, nil
 }
