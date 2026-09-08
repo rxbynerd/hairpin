@@ -289,3 +289,14 @@ ceiling exactly as documented, and the denial is masked as a 404
 towards the sandbox. The job status is still `succeeded` because the
 model completed its task; a caller who wants "the clone failed" as a
 job outcome has to read the tool result.
+
+## 2026-09-08 23:26: three concurrent live jobs
+
+Three `cerebras` jobs submitted in the same second (Fibonacci in sh,
+largest files under `/usr/lib`, `wc` on `/etc/passwd` and
+`/etc/group`). All three **succeeded**; wall times 3.8 s, 4.3 s, and
+5.8 s, and each reached `running` within 0.9 s of submission. Three
+harness Jobs, three sandbox Pods, three control-plane streams on the
+single hairpin replica, one shared egress proxy, no interference
+visible in any log. Cerebras queue time did not show up at this
+concurrency. All answers were correct.
