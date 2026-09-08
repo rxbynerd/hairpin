@@ -9,4 +9,6 @@ resources:
   - steeplechase.yaml
   - profiles.yaml
   - secret.yaml
+  - sandbox-token.yaml
+  - haybale.yaml
   - hairpin.yaml

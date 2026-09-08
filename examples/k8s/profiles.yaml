@@ -63,3 +63,43 @@ data:
       "maxTurns": 20,
       "timeout": 900
     }
+  # A run that needs git access to a haybale-fronted host: the sandbox
+  # never holds an upstream git credential, only the short-lived JWT
+  # sandboxIdentity requests from hairpin's --sandbox-token-* issuer.
+  # "gitea" is the routing key haybale.yaml's upstream is keyed on, not
+  # a real DNS name — see docs/deployment.md#deploying-haybale.
+  #
+  # network.mode "none" installs a deny-all NetworkPolicy for the
+  # sandbox Pod, so on any CNI that enforces NetworkPolicy (current kind
+  # releases included) the sandbox cannot reach haybale. Reaching it
+  # needs "allowlist" mode plus stirrup's egress-proxy Deployment
+  # (stirrup's examples/k8s/egress-proxy/) in the sandbox namespace with
+  # haybale's host:port in its allowlist; see
+  # examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one.
+  git.json: |
+    {
+      "mode": "execution",
+      "provider": {
+        "type": "anthropic",
+        "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+      },
+      "modelRouter": {
+        "type": "static",
+        "model": "claude-sonnet-4-6"
+      },
+      "executor": {
+        "type": "k8s",
+        "network": {"mode": "none"},
+        "sandboxIdentity": {
+          "source": "control-plane",
+          "audience": "https://haybale.hairpin.svc"
+        },
+        "gitProxy": {
+          "url": "http://haybale.hairpin.svc:8466",
+          "hosts": ["gitea"]
+        }
+      },
+      "permissionPolicy": {"type": "ask-upstream", "timeout": 120},
+      "maxTurns": 20,
+      "timeout": 900
+    }

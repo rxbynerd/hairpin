@@ -81,6 +81,29 @@ type Config struct {
 	// hairpin's export of its own signals. Empty leaves trace_emitter
 	// as the profile left it.
 	HarnessTelemetryEndpoint string
+
+	// SandboxToken configures hairpin as the JWT issuer for sandbox
+	// identity tokens (haybale's authenticating git proxy). A zero value
+	// disables issuance: sandbox_token_request is refused.
+	SandboxToken SandboxTokenConfig
+}
+
+// SandboxTokenConfig configures ES256 sandbox identity token issuance.
+// An empty KeyPath disables issuance entirely; Issuer, Audience, and a
+// positive TTL are required whenever KeyPath is set.
+type SandboxTokenConfig struct {
+	// KeyPath is the PEM file holding the ES256 (P-256) signing key.
+	// Empty disables issuance: sandbox_token_request is refused as
+	// explicitly unsupported, same as before this feature existed.
+	KeyPath string
+	// Issuer is the token's "iss" claim.
+	Issuer string
+	// Audience is the token's "aud" claim. The harness's own requested
+	// audience is informational only — this value always wins.
+	Audience string
+	// TTL bounds how long a minted token is valid. Kept short: haybale
+	// requires "exp" and recommends 15 minutes or less.
+	TTL time.Duration
 }
 
 // HarnessConfig configures the batch/v1 Job hairpin creates per run.
@@ -204,6 +227,20 @@ func (c *Config) Validate() error {
 	}
 	if c.Sandbox.Namespace == "" {
 		c.Sandbox.Namespace = c.Harness.Namespace
+	}
+	if c.SandboxToken.KeyPath == "" && (c.SandboxToken.Issuer != "" || c.SandboxToken.Audience != "") {
+		return fmt.Errorf("sandbox-token-issuer and sandbox-token-audience have no effect without sandbox-token-key")
+	}
+	if c.SandboxToken.KeyPath != "" {
+		if c.SandboxToken.Issuer == "" {
+			return fmt.Errorf("sandbox-token-issuer is required when sandbox-token-key is set")
+		}
+		if c.SandboxToken.Audience == "" {
+			return fmt.Errorf("sandbox-token-audience is required when sandbox-token-key is set")
+		}
+		if c.SandboxToken.TTL <= 0 {
+			return fmt.Errorf("sandbox-token-ttl must be positive")
+		}
 	}
 	return nil
 }

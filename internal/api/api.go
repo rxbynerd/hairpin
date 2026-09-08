@@ -36,6 +36,7 @@ func (s *Server) SubmitJob(ctx context.Context, req *connect.Request[hairpinv1.S
 		Prompt:        req.Msg.GetPrompt(),
 		Profile:       req.Msg.GetProfile(),
 		RunConfigJSON: req.Msg.GetRunConfigJson(),
+		RepoScope:     req.Msg.GetRepoScope(),
 	})
 	if err != nil {
 		return nil, connectError(err)

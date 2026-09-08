@@ -1,0 +1,90 @@
+# Development-only in-cluster gitea: a stand-in git host that lets the
+# "git" profile prove haybale's static-credential upstream path end to
+# end without GitHub App credentials. SQLite, emptyDir storage; a
+# restart loses all history, and that's fine here.
+#
+# Pulled directly from the public registry rather than built+loaded,
+# same as scripts/dev/fake-provider.yaml's python image: gitea ships no
+# project-specific patches, so there's nothing to build.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gitea
+  namespace: hairpin
+  labels:
+    app.kubernetes.io/name: gitea
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gitea
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gitea
+    spec:
+      # Unlike this repo's own workloads, gitea's official entrypoint
+      # needs to start as root to fix ownership of the mounted data
+      # volume before it drops privileges to the "git" user itself —
+      # left at the image default rather than forced non-root.
+      containers:
+        - name: gitea
+          # Pinned to a patch tag: haybale.sh depends on this image's
+          # `gitea admin user create` flags, which a minor tag can move
+          # under it.
+          image: docker.io/gitea/gitea:1.23.8
+          env:
+            - name: GITEA__security__INSTALL_LOCK
+              value: "true"
+            - name: GITEA__database__DB_TYPE
+              value: sqlite3
+            - name: GITEA__server__PROTOCOL
+              value: http
+            - name: GITEA__server__DOMAIN
+              value: gitea.hairpin.svc
+            - name: GITEA__server__ROOT_URL
+              value: http://gitea.hairpin.svc:3000/
+            - name: GITEA__server__HTTP_PORT
+              value: "3000"
+            - name: GITEA__server__DISABLE_SSH
+              value: "true"
+            - name: GITEA__service__DISABLE_REGISTRATION
+              value: "true"
+          ports:
+            - containerPort: 3000
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          # A named health endpoint would be more precise, but its exact
+          # path has shifted across gitea versions; a TCP check is the
+          # one thing guaranteed stable.
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitea
+  namespace: hairpin
+spec:
+  selector:
+    app.kubernetes.io/name: gitea
+  ports:
+    - port: 3000
+      targetPort: http

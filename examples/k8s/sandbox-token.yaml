@@ -1,0 +1,27 @@
+# The keypair hairpin signs sandbox-identity JWTs with, and the public
+# half haybale verifies them against — generated together, in one
+# `hairpin keygen --out key.pem --jwks-out jwks.json` call, because
+# they must always be the same pair.
+#
+# Both values below are placeholders: `key.pem` is not a real PEM, and
+# `jwks.json` carries no keys. Replace both together before applying, or
+# generate the pair out-of-band and drop this file — scripts/dev/deploy.sh
+# does exactly that for the kind development loop, so it never applies
+# this file at all.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hairpin-sandbox-token-key
+  namespace: hairpin
+type: Opaque
+stringData:
+  key.pem: "REPLACE_ME"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haybale-jwks
+  namespace: hairpin
+data:
+  jwks.json: |
+    {"keys": []}

@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -19,6 +21,10 @@ type SubmitParams struct {
 	Prompt        string
 	Profile       string
 	RunConfigJSON string
+	// RepoScope grants sandbox_token_request tokens issued for this job
+	// access to these "haybale.dev/repos" glob patterns. Empty grants
+	// none.
+	RepoScope []string
 }
 
 // Submit resolves, validates, and persists a job, then launches its
@@ -42,6 +48,9 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 	}
 	if profile != "" {
 		span.SetAttributes(telemetry.ProfileAttr(profile))
+	}
+	if err := validateRepoScope(p.RepoScope); err != nil {
+		return nil, err
 	}
 
 	id := job.NewID()
@@ -72,6 +81,7 @@ func (s *Service) Submit(ctx context.Context, p SubmitParams) (*job.Job, error) 
 		CreatedAt:     time.Now().UTC(),
 		HarnessToken:  job.NewHarnessToken(),
 		TraceParent:   telemetry.TraceParent(ctx),
+		RepoScope:     p.RepoScope,
 	}
 	if err := s.store.CreateJob(ctx, j); err != nil {
 		return fail(profile, telemetry.SubmissionFailed, err)
@@ -144,6 +154,37 @@ func validateRunConfig(cfg *harnessv1.RunConfig) error {
 		return fmt.Errorf("run config executor.type is required (local, container, k8s, k8s-sandbox, api, none): %w", ErrInvalidArgument)
 	}
 	return validateExecutor(cfg.GetExecutor())
+}
+
+// maxRepoScopeEntries bounds SubmitJobRequest.repo_scope: enough for any
+// legitimate multi-repo grant, small enough that a mistaken huge list is
+// rejected rather than bloating every issued token.
+const maxRepoScopeEntries = 32
+
+// maxRepoScopeEntryBytes bounds one repo_scope glob. A host/owner/repo
+// pattern is far shorter; the cap keeps a caller-supplied claim from
+// bloating every minted token.
+const maxRepoScopeEntryBytes = 256
+
+// validateRepoScope rejects a repo_scope that could not possibly be a
+// list of haybale.dev/repos glob patterns, before it reaches the job
+// record. An empty scope is valid: it grants no repo access.
+func validateRepoScope(scope []string) error {
+	if len(scope) > maxRepoScopeEntries {
+		return fmt.Errorf("repo_scope has %d entries, max %d: %w", len(scope), maxRepoScopeEntries, ErrInvalidArgument)
+	}
+	for _, entry := range scope {
+		if entry == "" {
+			return fmt.Errorf("repo_scope entries must not be empty: %w", ErrInvalidArgument)
+		}
+		if len(entry) > maxRepoScopeEntryBytes {
+			return fmt.Errorf("repo_scope entry of %d bytes exceeds the %d byte limit: %w", len(entry), maxRepoScopeEntryBytes, ErrInvalidArgument)
+		}
+		if strings.ContainsFunc(entry, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) }) {
+			return fmt.Errorf("repo_scope entry %q must not contain whitespace or control characters: %w", entry, ErrInvalidArgument)
+		}
+	}
+	return nil
 }
 
 // launch drives the queued → launching → awaiting_harness transitions

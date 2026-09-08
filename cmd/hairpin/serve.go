@@ -31,19 +31,26 @@ import (
 	"github.com/rxbynerd/hairpin/internal/store"
 	"github.com/rxbynerd/hairpin/internal/store/redisstore"
 	"github.com/rxbynerd/hairpin/internal/telemetry"
+	"github.com/rxbynerd/hairpin/internal/tokenissuer"
 	"github.com/rxbynerd/hairpin/internal/web"
 )
 
 func run(args []string) error {
-	if len(args) < 1 || args[0] != "serve" {
-		return fmt.Errorf("usage: hairpin serve [flags]")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: hairpin <serve|keygen> [flags]")
 	}
-
-	cfg, err := parseServeFlags(args[1:])
-	if err != nil {
-		return err
+	switch args[0] {
+	case "serve":
+		cfg, err := parseServeFlags(args[1:])
+		if err != nil {
+			return err
+		}
+		return serve(cfg)
+	case "keygen":
+		return runKeygen(args[1:])
+	default:
+		return fmt.Errorf("usage: hairpin <serve|keygen> [flags]")
 	}
-	return serve(cfg)
 }
 
 func parseServeFlags(args []string) (*config.Config, error) {
@@ -83,6 +90,11 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	fs.StringVar(&cfg.Telemetry.ServiceName, "telemetry-service-name", "", "service.name reported to the collector (empty: OTEL_SERVICE_NAME, then hairpin)")
 	fs.DurationVar(&cfg.Telemetry.MetricInterval, "telemetry-metric-interval", telemetry.DefaultMetricInterval, "how often metrics are exported")
 
+	fs.StringVar(&cfg.SandboxToken.KeyPath, "sandbox-token-key", "", "path to an ES256 (P-256) private key PEM for signing sandbox identity tokens; empty disables issuance (sandbox_token_request is refused)")
+	fs.StringVar(&cfg.SandboxToken.Issuer, "sandbox-token-issuer", "", "iss claim on minted sandbox identity tokens; required when -sandbox-token-key is set")
+	fs.StringVar(&cfg.SandboxToken.Audience, "sandbox-token-audience", "", "aud claim on minted sandbox identity tokens; required when -sandbox-token-key is set. Always wins over the harness's requested audience.")
+	tokenTTL := fs.Duration("sandbox-token-ttl", 15*time.Minute, "TTL of minted sandbox identity tokens")
+
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -94,6 +106,7 @@ func parseServeFlags(args []string) (*config.Config, error) {
 	}
 	cfg.Harness.TTLSecondsAfterFinished = int32(*ttl)
 	cfg.Harness.ActiveDeadlineSlack = *slack
+	cfg.SandboxToken.TTL = *tokenTTL
 	if cfg.AdvertiseAddr == "" && cfg.Harness.Namespace != "" {
 		cfg.AdvertiseAddr = defaultAdvertiseAddr(cfg.Harness.Namespace, cfg.ListenAddr)
 	}
@@ -177,6 +190,21 @@ func serve(cfg *config.Config) error {
 		logger.Info("memory tools disabled; submits declaring them are rejected")
 	}
 
+	issuer, err := buildTokenIssuer(cfg)
+	if err != nil {
+		return err
+	}
+	if issuer == nil {
+		logger.Warn("no sandbox token key configured; sandbox_token_request will be refused")
+	} else {
+		logger.Info("sandbox identity token issuance enabled",
+			"issuer", cfg.SandboxToken.Issuer, "audience", cfg.SandboxToken.Audience, "kid", issuer.KeyID())
+		if cfg.SandboxToken.TTL > time.Hour {
+			logger.Warn("sandbox identity token TTL is longer than an hour; a leaked token stays valid for the whole window",
+				"ttl", cfg.SandboxToken.TTL)
+		}
+	}
+
 	reg := registry.New()
 	svc := service.New(st, reg, l, profiles, logger,
 		service.WithExecutorDefaults(cfg.Sandbox),
@@ -188,6 +216,9 @@ func serve(cfg *config.Config) error {
 		controlplane.WithLogger(logger),
 		controlplane.WithMemory(memoryClient),
 		controlplane.WithTelemetry(tel),
+	}
+	if issuer != nil {
+		cpOpts = append(cpOpts, controlplane.WithSandboxTokenIssuer(issuer))
 	}
 
 	cp := controlplane.New(st, reg, cpOpts...)
@@ -219,6 +250,14 @@ func serve(cfg *config.Config) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	if issuer != nil {
+		// haybale's jwksURL must be HTTPS or loopback; the reference
+		// deployment ships this as a file instead (see
+		// docs/deployment.md#sandbox-identity-tokens). Serving it here
+		// still lets a caller inspect the current key over a trusted
+		// network, and covers deployments that do front this in HTTPS.
+		mux.Handle("/.well-known/jwks.json", issuer.JWKSHandler())
+	}
 	mux.Handle("/", web.New(svc, logger))
 
 	// The harness dials with plaintext gRPC (HTTP/2 prior knowledge), so
@@ -286,6 +325,24 @@ func buildStore(cfg *config.Config, logger *slog.Logger) (store.Store, error) {
 		return nil, fmt.Errorf("redis at %s: %w", cfg.RedisAddr, err)
 	}
 	return redisstore.New(client, redisstore.Options{}), nil
+}
+
+// buildTokenIssuer loads the configured signing key and returns a sandbox
+// identity token Issuer, or nil when no key is configured — Config.Validate
+// already checked issuer/audience/ttl accompany a set key.
+func buildTokenIssuer(cfg *config.Config) (*tokenissuer.Issuer, error) {
+	if cfg.SandboxToken.KeyPath == "" {
+		return nil, nil
+	}
+	priv, err := tokenissuer.LoadKey(cfg.SandboxToken.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox token key: %w", err)
+	}
+	issuer, err := tokenissuer.New(priv, cfg.SandboxToken.Issuer, cfg.SandboxToken.Audience, cfg.SandboxToken.TTL)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox token issuer: %w", err)
+	}
+	return issuer, nil
 }
 
 func buildLauncher(cfg *config.Config, logger *slog.Logger) (launcher.Launcher, error) {

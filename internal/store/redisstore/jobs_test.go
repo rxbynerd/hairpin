@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -34,6 +35,43 @@ func TestCreateAndGetJob(t *testing.T) {
 	}
 	if !got.StartedAt.IsZero() || !got.FinishedAt.IsZero() || !got.LastEventAt.IsZero() {
 		t.Fatalf("expected zero optional times, got %+v", got)
+	}
+}
+
+func TestJobRepoScopeRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, Options{})
+
+	j := newTestJob("hp-scope")
+	j.RepoScope = []string{"github.com/rxbynerd/*", "github.com/rxbynerd-forks/hairpin"}
+	if err := s.CreateJob(ctx, j); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !slices.Equal(got.RepoScope, j.RepoScope) {
+		t.Fatalf("RepoScope = %v, want %v", got.RepoScope, j.RepoScope)
+	}
+}
+
+func TestJobRepoScopeEmptyOmitted(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t, Options{})
+
+	j := newTestJob("hp-noscope")
+	if err := s.CreateJob(ctx, j); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, j.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(got.RepoScope) != 0 {
+		t.Fatalf("RepoScope = %v, want empty", got.RepoScope)
 	}
 }
 

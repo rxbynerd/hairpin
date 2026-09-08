@@ -7,6 +7,11 @@
 # port. What remains are the pieces only an operator can name: where
 # Redis, Billet, and the collector runs export to are, which profiles to
 # serve, and the identities the harness and its sandboxes run as.
+#
+# The --sandbox-token-* flags make hairpin a JWT issuer for haybale (see
+# haybale.yaml): it signs a short-lived, per-run token from the mounted
+# key and serves the matching JWKS. Only a profile whose executor sets
+# sandbox_identity ever requests one — see profiles.yaml's "git" profile.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,6 +32,10 @@ spec:
       serviceAccountName: hairpin
       securityContext:
         runAsNonRoot: true
+        # Secret volumes are owned by root:fsGroup; without this, the
+        # container's non-root UID (65532, from the image) can't read
+        # the sandbox-token key regardless of defaultMode.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -41,6 +50,9 @@ spec:
             - --sandbox-namespace=hairpin-sandboxes
             - --sandbox-service-account=stirrup-sandbox
             - --billet-addr=billet.hairpin.svc:8141
+            - --sandbox-token-key=/etc/hairpin/sandbox-token/key.pem
+            - --sandbox-token-issuer=https://hairpin.hairpin.svc
+            - --sandbox-token-audience=https://haybale.hairpin.svc
             # Where the harness exports each run's own trace, injected
             # into a submitted RunConfig that names no trace_emitter.
             - --harness-telemetry-endpoint=steeplechase.hairpin.svc:4317
@@ -61,6 +73,9 @@ spec:
           volumeMounts:
             - name: profiles
               mountPath: /etc/hairpin/profiles
+              readOnly: true
+            - name: sandbox-token-key
+              mountPath: /etc/hairpin/sandbox-token
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -83,6 +98,12 @@ spec:
         - name: profiles
           configMap:
             name: hairpin-profiles
+        - name: sandbox-token-key
+          secret:
+            secretName: hairpin-sandbox-token-key
+            # Owner-and-group read only; group read is required so the
+            # fsGroup-owned file is readable by the container's UID.
+            defaultMode: 0440
 ---
 apiVersion: v1
 kind: Service

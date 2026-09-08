@@ -78,6 +78,10 @@ type Job struct {
 	// (inside CONTROL_PLANE_SESSION_ID, echoed back in ready.id) to
 	// claim this job's stream. Never exposed on the Job API surface.
 	HarnessToken string
+	// RepoScope lists the "haybale.dev/repos" glob patterns minted into
+	// this job's sandbox identity token, when the control plane issues
+	// one. Empty means any issued token carries no repo grant.
+	RepoScope []string
 }
 
 // MaxFinalTextBytes caps FinalText accumulation, mirroring stirrup's
