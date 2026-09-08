@@ -223,3 +223,55 @@ branch is pushed and opened as a stirrup pull request.
 The steeplechase warning from the earlier smoke test is confirmed as
 timing only: its log holds a grouped `=== run hp-... started/finished`
 block for that job; `kubectl logs` on the kind-on-podman node lags.
+
+## 2026-09-08 23:21: the live GitHub run
+
+`cerebras-git` profile, `repoScope: ["github.com/rxbynerd/springboard-chrome"]`,
+prompt: clone over HTTPS, branch `tidy-debug-logging`, replace the
+scattered console calls in `springboard.js` with a `DEBUG`-gated
+helper, commit as `haybale-dev[bot]`, push the branch, never touch
+`main`.
+
+**Succeeded in 21 s wall**, 13 tool results, one
+`sandbox_token_request`. The branch exists on GitHub with commit
+`8f5c7ee` by `haybale-dev[bot]`, 13 insertions and 14 deletions in one
+file, and is opened as
+[springboard-chrome PR #1](https://github.com/rxbynerd/springboard-chrome/pull/1).
+The diff is what was asked for; the model dropped the file's trailing
+newline and removed the debug extension-ID comment, both noted on the
+PR for the human reviewer.
+
+What each component logged, joined on the job ID:
+
+- **hairpin**: `issued sandbox identity token ... expires_at=23:36:00
+  repo_scope=[github.com/rxbynerd/springboard-chrome]` at 23:21:00,
+  the moment the harness was assigned.
+- **egress proxy**: eight `egress_allowed` events for
+  `haybale.hairpin.svc:8466`, GETs for `info/refs` and POSTs for the
+  pack exchanges, `runId=""` because the proxy is shared and carries no
+  run context.
+- **haybale**: `authn_failed` for `verb=read`, then `token_minted
+  appID=4278664 installationID=146047506 verb=read`, three proxied
+  reads (the clone, `bytesOut=42930` for the pack), then the same
+  pair for `verb=write` and two proxied writes for the push. Two
+  installation tokens, each scoped to the one repo and one verb, and
+  the run's identity is the job ID. The `authn_failed` lines are git's
+  normal first unauthenticated probe before it consults the credential
+  helper, logged as a `WARN security event`; on a working run that is
+  noise worth downgrading in haybale.
+- **harness**: warned that the 15-minute sandbox token expires before
+  the run's 20-minute budget. stirrup requests the token once and
+  never refreshes it, and haybale recommends 15 minutes or less, so
+  this cannot be fixed by a longer hairpin TTL; filed as
+  [stirrup #594](https://github.com/rxbynerd/stirrup/issues/594).
+  Also warned twice from `codescanner` that JavaScript template
+  literals are shell backtick substitution; filed as
+  [stirrup #595](https://github.com/rxbynerd/stirrup/issues/595).
+- **hairpin again**: one `unknown harness event type type=tool_result`
+  line per tool result. Fixed on this branch (commit `6cd8c8e`): both
+  `tool_call` and `tool_result` are now named cases in the pump. The
+  missing `tool_call` events themselves are
+  [stirrup #593](https://github.com/rxbynerd/stirrup/issues/593).
+
+The stirrup proxy env fix is
+[stirrup PR #592](https://github.com/rxbynerd/stirrup/pull/592).
