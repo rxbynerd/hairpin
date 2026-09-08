@@ -275,3 +275,17 @@ What each component logged, joined on the job ID:
 
 The stirrup proxy env fix is
 [stirrup PR #592](https://github.com/rxbynerd/stirrup/pull/592).
+
+## 2026-09-08 23:25: repo scope narrowing, denied as designed
+
+`cerebras-git` with `repoScope: ["github.com/rxbynerd/hairpin"]` and
+a prompt to `git ls-remote` springboard-chrome once. **Succeeded in
+4 s** (the job, not the clone): the sandbox got `remote: 404 page not
+found` and reported it verbatim. haybale logged `policy_denied
+identity=hp-... reason="repo outside token scope"` with the matched
+rule (`github.com/rxbynerd/*`, which on its own would have allowed the
+repo), so the token's `haybale.dev/repos` claim narrowed the policy
+ceiling exactly as documented, and the denial is masked as a 404
+towards the sandbox. The job status is still `succeeded` because the
+model completed its task; a caller who wants "the clone failed" as a
+job outcome has to read the tool result.
