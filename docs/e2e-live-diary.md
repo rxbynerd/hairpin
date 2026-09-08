@@ -204,3 +204,22 @@ curl", so the quirk is visible enough for a model to route around.
   harness finished all ten (each with `sleep 2`) before reporting
   `done` with `stop_reason: cancelled`. A profile that allows parallel
   tool calls makes cancel latency proportional to the batch.
+
+## 2026-09-08 23:20: the proxy env fix, verified
+
+The subagent's stirrup branch `fix/lowercase-proxy-env` (commit
+`16b98ed7`, off stirrup main `e7adc573`) injects `http_proxy`,
+`https_proxy`, and `no_proxy` beside the upper-case names in both
+executors and reserves them in `sandboxidentity`. Its `just test` and
+`just lint` were green. The harness image built from it was loaded into
+kind as `localhost/stirrup:proxy-env` and hairpin's Deployment patched
+to `--harness-image=localhost/stirrup:proxy-env`.
+
+**`git-smoke-test` passed**: job succeeded and gitea's `main` moved
+from `4eb336a8` to `70dcf41c`. That is the first time the sandbox to
+egress proxy to haybale to git host chain has completed on kind. The
+branch is pushed and opened as a stirrup pull request.
+
+The steeplechase warning from the earlier smoke test is confirmed as
+timing only: its log holds a grouped `=== run hp-... started/finished`
+block for that job; `kubectl logs` on the kind-on-podman node lags.
