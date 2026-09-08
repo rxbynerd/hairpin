@@ -300,3 +300,31 @@ harness Jobs, three sandbox Pods, three control-plane streams on the
 single hairpin replica, one shared egress proxy, no interference
 visible in any log. Cerebras queue time did not show up at this
 concurrency. All answers were correct.
+
+## 2026-09-09 00:30: where things stand
+
+Branch `e2e-fixes` is [hairpin PR #15](https://github.com/rxbynerd/hairpin/pull/15).
+
+**The dev cluster as left.** `kind-hairpin` with every component on
+its published image except the harness: hairpin's Deployment is
+patched to `--harness-image=localhost/stirrup:proxy-env`, built from
+the stirrup worktree at `~/Developer/stirrup-proxyfix` (branch
+`fix/lowercase-proxy-env`). `deploy.sh` re-applies `hairpin.yaml` and
+resets that patch, so re-apply it after any deploy until stirrup PR
+#592 is published, or every git-profile run hangs 60 s per git
+command again. The `cerebras`, `cerebras-git`, and `git` profiles and
+the Cerebras key are in the cluster; `provider.sh`, `haybale.sh`, and
+`haybale-github.sh` must be re-run after a deploy, as their headers
+say. The tmux session `e2e` holds the secrets in its environment.
+
+**Not exercised.** A run longer than the 15-minute token TTL (stirrup
+#594 would bite); gVisor; a profile that keeps `ask-upstream` while
+pushing through haybale; haybale's `hp-*` policy narrowed to
+per-caller rules; Cerebras rate limits under more than three parallel
+jobs; steeplechase forwarding to an external sink.
+
+**Reading the results.** Per-job logs, SSE captures, and the helper
+scripts (`run.sh`, `perm_test.py`, `parallel_test.py`) were in the
+session scratchpad, not the repo; the job IDs in this diary can be
+replayed from Redis through `GetJob` and `/jobs/{id}/events` while the
+cluster lives, and every harness Job's Pod log is still on the node.
