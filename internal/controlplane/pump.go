@@ -135,6 +135,9 @@ func (p *eventPump) handle(ev *harnessv1.HarnessEvent) bool {
 		// Type only: a heartbeat carries no fields worth persisting.
 		p.append(store.Event{Type: evHeartbeat, At: now})
 
+	case evToolCall, evToolResult:
+		p.appendProto(ev, now)
+
 	case evPermissionRequest:
 		p.putPermission(ev, now)
 		p.appendProto(ev, now)

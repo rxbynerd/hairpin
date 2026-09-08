@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -1033,5 +1034,38 @@ func TestRunTaskSettledJobNotResurrected(t *testing.T) {
 	}
 	if got := s.types(); !equalStrings(got, []string{ctlTaskAssignment, ctlCancel}) {
 		t.Fatalf("controls = %v, want [task_assignment cancel]", got)
+	}
+}
+
+func TestRunTaskRecordsToolCallAndResultInOrder(t *testing.T) {
+	h, st, _ := testHandler(t)
+	seedJob(t, st, "hp-tools", job.StatusAwaitingHarness, nil)
+
+	s := newFakeStream(
+		ready("hp-tools"),
+		&harnessv1.HarnessEvent{Type: evToolCall, ToolUseId: "tu-1", ToolName: "run_command", Input: []byte(`{"command":"ls"}`)},
+		&harnessv1.HarnessEvent{Type: evToolResult, ToolUseId: "tu-1", Content: "README.md"},
+		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
+	)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	var got []string
+	for _, ev := range events(t, st, "hp-tools") {
+		switch ev.Type {
+		case evToolCall, evToolResult:
+			got = append(got, ev.Type+":"+ev.PayloadJSON)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("recorded tool events = %q, want a tool_call then a tool_result", got)
+	}
+	// Input is a bytes field, so protojson carries it base64-encoded.
+	if !strings.Contains(got[0], `"run_command"`) || !strings.Contains(got[0], base64.StdEncoding.EncodeToString([]byte(`{"command":"ls"}`))) {
+		t.Errorf("tool_call payload lost its input: %s", got[0])
+	}
+	if !strings.Contains(got[1], "README.md") {
+		t.Errorf("tool_result payload lost its content: %s", got[1])
 	}
 }

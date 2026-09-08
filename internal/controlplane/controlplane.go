@@ -30,6 +30,8 @@ import (
 const (
 	evReady               = "ready"
 	evTextDelta           = "text_delta"
+	evToolCall            = "tool_call"
+	evToolResult          = "tool_result"
 	evHeartbeat           = "heartbeat"
 	evPermissionRequest   = "permission_request"
 	evError               = "error"
