@@ -88,9 +88,15 @@ const (
 // cardinality bounded no matter what the harness sends.
 const otherLabel = "other"
 
+// StopHarnessNeverConnected is hairpin's own stop reason for a job the
+// reaper settled because its harness never dialled back. stirrup never
+// reports it, so the series is unambiguously reaper-settled.
+const StopHarnessNeverConnected = "harness_never_connected"
+
 // knownStopReasons is stirrup's run-outcome vocabulary as carried by
-// done.stop_reason. Anything else is counted as "other" rather than
-// opening a metric series per novel value.
+// done.stop_reason, plus hairpin's own terminal reasons. Anything else
+// is counted as "other" rather than opening a metric series per novel
+// value.
 var knownStopReasons = map[string]struct{}{
 	"success":     {},
 	"error":       {},
@@ -103,6 +109,8 @@ var knownStopReasons = map[string]struct{}{
 	"aborted":     {},
 	"interrupted": {},
 	"refusal":     {},
+
+	StopHarnessNeverConnected: {},
 }
 
 // knownEventTypes is the HarnessEvent.type vocabulary hairpin serves.

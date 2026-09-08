@@ -64,6 +64,12 @@ type Config struct {
 	// DefaultProfile is used when a submit names no profile.
 	DefaultProfile string
 
+	// Retention deletes a terminal job's record, event timeline, and
+	// permission requests this long after FinishedAt. <=0 (the
+	// default) disables deletion: jobs are kept until an operator
+	// removes them by other means.
+	Retention time.Duration
+
 	// Harness configures the Jobs hairpin creates.
 	Harness HarnessConfig
 	// Sandbox supplies the cluster coordinates a submitted RunConfig's

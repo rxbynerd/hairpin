@@ -991,3 +991,47 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// settleOnFirstUpdate fails the job out from under runTask at its first
+// UpdateJob call — the running transition — reproducing a reaper
+// deadline firing between task assignment and that write.
+type settleOnFirstUpdate struct {
+	store.Store
+	settled bool
+}
+
+func (s *settleOnFirstUpdate) UpdateJob(ctx context.Context, id string, fn func(*job.Job) error) (*job.Job, error) {
+	if !s.settled {
+		s.settled = true
+		if _, err := s.Store.UpdateJob(ctx, id, func(j *job.Job) error {
+			j.Status = job.StatusFailed
+			j.Error = "harness never connected before deadline"
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.UpdateJob(ctx, id, fn)
+}
+
+func TestRunTaskSettledJobNotResurrected(t *testing.T) {
+	mem := store.NewMemStore(0)
+	t.Cleanup(func() { _ = mem.Close() })
+	st := &settleOnFirstUpdate{Store: mem}
+	reg := registry.New()
+	h := New(st, reg, WithLogger(slog.New(slog.DiscardHandler)))
+	seedJob(t, st, "hp-1", job.StatusAwaitingHarness, nil)
+
+	s := newFakeStream(ready("hp-1"), delta("late"))
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	j := getJob(t, st, "hp-1")
+	if j.Status != job.StatusFailed {
+		t.Fatalf("status = %q, want failed: a settled job must not be resurrected to running", j.Status)
+	}
+	if got := s.types(); !equalStrings(got, []string{ctlTaskAssignment, ctlCancel}) {
+		t.Fatalf("controls = %v, want [task_assignment cancel]", got)
+	}
+}

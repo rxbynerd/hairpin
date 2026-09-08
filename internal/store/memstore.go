@@ -23,10 +23,11 @@ type memStore struct {
 }
 
 type memWatcher struct {
-	ch     chan Event
-	ctx    context.Context
-	jobID  string
-	closed bool
+	ch    chan Event
+	ctx   context.Context
+	jobID string
+	// done ends the watch when its job is deleted out from under it.
+	done chan struct{}
 }
 
 // NewMemStore returns an in-memory Store. Event timelines are capped at
@@ -113,6 +114,28 @@ func (m *memStore) UpdateJob(_ context.Context, id string, fn func(*job.Job) err
 	return &out, nil
 }
 
+func (m *memStore) DeleteJob(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.jobs[id]; !ok {
+		return fmt.Errorf("job %s: %w", id, ErrNotFound)
+	}
+	delete(m.jobs, id)
+	delete(m.events, id)
+	delete(m.perms, id)
+	for _, w := range m.watchers[id] {
+		close(w.done)
+	}
+	delete(m.watchers, id)
+	for i, cand := range m.order {
+		if cand == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func (m *memStore) AppendEvent(_ context.Context, jobID string, ev Event) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -173,7 +196,7 @@ func (m *memStore) WatchEvents(ctx context.Context, jobID string, afterID string
 		return nil, fmt.Errorf("job %s: %w", jobID, ErrNotFound)
 	}
 	// Buffer sized so history replay never blocks the appender.
-	w := &memWatcher{ch: make(chan Event, m.maxLen+64), ctx: ctx, jobID: jobID}
+	w := &memWatcher{ch: make(chan Event, m.maxLen+64), ctx: ctx, jobID: jobID, done: make(chan struct{})}
 	for _, ev := range m.events[jobID] {
 		if afterID != "" && !streamIDLess(afterID, ev.ID) {
 			continue
@@ -191,10 +214,14 @@ func (m *memStore) WatchEvents(ctx context.Context, jobID string, afterID string
 			select {
 			case <-ctx.Done():
 				return
+			case <-w.done:
+				return
 			case ev := <-w.ch:
 				select {
 				case out <- ev:
 				case <-ctx.Done():
+					return
+				case <-w.done:
 					return
 				}
 			}
