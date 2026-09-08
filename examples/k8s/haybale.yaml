@@ -3,20 +3,17 @@
 # checks the sandbox's short-lived JWT against a default-deny policy and
 # swaps in an upstream credential the sandbox never sees.
 #
-# No published registry image exists yet — build one from a local
-# checkout (`podman build -t localhost/haybale:dev <path-to-haybale>`)
-# and load it into your cluster; scripts/dev/haybale.sh does this for
-# the kind development loop. Replace `image:` below once a registry
-# image is published.
-#
 # The upstream wired in here is the development gitea from
 # scripts/dev/gitea.yaml, reached through a static credential. The
-# commented block below is the GitHub App upstream to swap in for a
-# real deployment; see docs/deployment.md#deploying-haybale.
+# commented block below is the GitHub App upstream to add for a real
+# deployment; scripts/dev/haybale-github.sh wires it into a running
+# cluster. See docs/deployment.md#deploying-haybale.
 #
 # haybale-jwks (ConfigMap, referenced but not defined here) and
 # haybale-gitea-token's real value are generated, not applied statically
-# — see sandbox-token.yaml and scripts/dev/haybale.sh.
+# — see sandbox-token.yaml and scripts/dev/haybale.sh. The
+# haybale-github-app-key Secret is optional: absent, the init container
+# below copies nothing and only the gitea upstream is usable.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -58,16 +55,17 @@ data:
           username: hairpin-dev
           tokenEnv: HAYBALE_GITEA_TOKEN
 
-      # Swap the upstream above for this once a GitHub App exists: it
-      # mints a fresh, per-repo, per-verb installation token for every
-      # request instead of one static credential good for everything
-      # the policy allows.
+      # Add this once a GitHub App exists: it mints a fresh, per-repo,
+      # per-verb installation token for every request instead of one
+      # static credential good for everything the policy allows. The
+      # key file is what the init container copies out of the
+      # haybale-github-app-key Secret.
       # - host: github.com
       #   baseURL: https://github.com
       #   credential:
       #     type: github-app
       #     appID: 123456
-      #     privateKeyPath: /etc/haybale/github-app/private-key.pem
+      #     privateKeyPath: /etc/haybale/github-app/github-app.pem
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -140,11 +138,36 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 60
+      # haybale refuses a private key with any group or other permission
+      # bit, and a Secret volume cannot produce an owner-only file for a
+      # non-root user (fsGroup lands it at 0440). The key is copied into
+      # a memory-backed emptyDir at 0600 instead, owned by the runtime
+      # user. A missing Secret copies nothing.
+      initContainers:
+        - name: github-app-key
+          image: docker.io/library/busybox:1.37
+          command:
+            - sh
+            - -c
+            - |
+              if [ -f /in/private-key.pem ]; then
+                umask 077
+                cp /in/private-key.pem /keys/github-app.pem
+              fi
+          volumeMounts:
+            - name: github-app-key-in
+              mountPath: /in
+              readOnly: true
+            - name: github-app-key
+              mountPath: /keys
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: haybale
-          # No published image; built locally, see the file header.
-          image: localhost/haybale:dev
-          imagePullPolicy: IfNotPresent
+          image: ghcr.io/rxbynerd/haybale:latest
           env:
             - name: HAYBALE_GITEA_TOKEN
               valueFrom:
@@ -164,6 +187,9 @@ spec:
               readOnly: true
             - name: jwks
               mountPath: /etc/haybale/jwks
+              readOnly: true
+            - name: github-app-key
+              mountPath: /etc/haybale/github-app
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -204,6 +230,16 @@ spec:
           # ConfigMap (not a Secret) is fine.
           configMap:
             name: haybale-jwks
+        - name: github-app-key-in
+          secret:
+            secretName: haybale-github-app-key
+            optional: true
+            # World-readable inside the Pod only so the non-root init
+            # container can read it; the copy is what haybale opens.
+            defaultMode: 0444
+        - name: github-app-key
+          emptyDir:
+            medium: Memory
 ---
 apiVersion: v1
 kind: Service
