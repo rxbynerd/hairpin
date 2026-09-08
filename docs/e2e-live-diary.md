@@ -108,3 +108,77 @@ changes below.
 - `haybale-github.sh` stored the App key, and haybale started with
   `upstreams=2`: the init container's `0600` copy passed the
   permission check on the first attempt.
+
+## 2026-09-08 23:08: baseline smoke tests
+
+`smoke-test.sh` passed on the published harness image in 6 s, with a
+warning that steeplechase logged no run block within 60 s. That
+warning is misleading: steeplechase's log shows the spans of later
+runs arriving live, so delivery works and the check is racing the
+collector's grouped flush. Not chased further.
+
+`git-smoke-test.sh` (gitea through haybale, now in `allowlist` mode)
+**failed**: the job reported success, but the seed repo's `main` did
+not move. The harness log shows one `run_command` that ran for exactly
+60 s, and the recorded `tool_result` is `Cloning into '/tmp/repo'...`
+followed by `[timed out after 60s]`. Neither haybale nor the egress
+proxy logged a request, so the sandbox never reached the proxy.
+
+**Root cause, verified in the sandbox image.** A throwaway Pod in
+`hairpin-sandboxes` under a copy of the harness's allowlist
+NetworkPolicy reaches haybale through the proxy Service and is
+blocked going direct, so the policy and the proxy are correct. In the
+published sandbox image, `git ls-remote http://haybale...` with only
+`HTTP_PROXY` set hangs (exit 124 under `timeout`), and with lowercase
+`http_proxy` it reaches haybale and is asked for credentials. libcurl,
+hence git, ignores uppercase `HTTP_PROXY` for plain-http destinations
+and stirrup's executors inject only the uppercase names (`proxyEnvFor`
+in `k8s_netpol.go`, and the container executor). Every git-over-haybale
+run in allowlist mode therefore hangs until the tool timeout. The fix
+is in stirrup (inject both spellings); a subagent is preparing it on
+`fix/lowercase-proxy-env` in a stirrup worktree, and the harness image
+built from it will be loaded into kind until the change is published.
+
+Also seen in that harness log: `failed to upload metrics: context
+canceled` at exit, the harness's OTLP flush losing the race with its
+own shutdown after `done`.
+
+## 2026-09-08 23:13: first live model run
+
+`cerebras` profile, prompt asking for OS, architecture, user, and the
+presence of git, curl, python3, node. **Succeeded** in 13 s wall
+(8 turns, 17 tool results), answered correctly: Debian 13 on aarch64,
+`nonroot` 65532, git 2.47.3, no curl, python3, or node.
+
+- **stirrup's tool guard rejected six of the seventeen commands.**
+  `security.GuardToolCall` runs unconditionally on every `run_command`
+  and rejects any command containing `curl`, `wget`, `nc`, `netcat`,
+  `ncat`, or `socat` as a word, or any backtick or `$(`. Asking about
+  curl guaranteed rejections (`command -v curl`, `which curl`), and the
+  model's first compound command tripped the shell-escape rule. The
+  model adapted, listing `/usr/bin` instead. `git` is not on the list.
+  A model that writes `git commit -m "$(...)"` will be rejected.
+- **The hairpin timeline never shows a tool's input.** stirrup's proto
+  documents a `tool_call` event, but the core emits only `text_delta`
+  and `tool_result` to the transport (`core/types.go`), so hairpin
+  records results with no calls. Auditing a run means reading the
+  harness Pod log. Worth an upstream issue.
+- **Reasoning-model text.** qwen emits `\n\n` content alongside each
+  tool call; `final_text` accumulates those, so it opens with dozens of
+  blank lines before the real answer.
+- steeplechase received the run's spans live, including
+  `tool.failure_category=security_guard_denied`, and named the quirks
+  applied: `OpenAI-compatible: native tool_choice`.
+- **The WatchJob curl example in `docs/api.md` never worked**: the
+  streaming method refuses `application/json` with 415. Fixed the doc
+  to explain the Connect framing and point shell users at the SSE
+  feed, which is what the run helper now uses.
+
+## 2026-09-08 23:15: memory round trip, first half
+
+`cerebras` profile: search memory, inspect git and curl, save a fact.
+**Succeeded** in 43 s. `search_memory` returned four records left by
+the fake-provider smoke tests, and `save_memory` returned
+`{"accepted": true}` with a memory ID. The model wrote in its final
+text that "the guard appears to block any command string containing
+curl", so the quirk is visible enough for a model to route around.
