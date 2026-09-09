@@ -63,6 +63,9 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
    #608](https://github.com/rxbynerd/stirrup/pull/608)), so a terminal
    `done` or `error` is no longer lost to a teardown race and a
    rejected RunConfig no longer arrives looking like a crashed pod.
+   The wait is best-effort rather than a delivery guarantee, and it
+   does not apply when the harness takes a signal
+   ([`docs/api.md`](api.md#job-lifecycle)).
 
 ## Components
 

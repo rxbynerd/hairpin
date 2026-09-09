@@ -212,10 +212,11 @@ Both ConfigMaps are replaced wholesale, so re-run this after
 `git-smoke-test` needs a harness image carrying [stirrup PR
 #592](https://github.com/rxbynerd/stirrup/pull/592), without which a
 clone through the egress proxy hangs on the proxy environment
-variables' spelling — see [Sandbox
-egress](#sandbox-egress-and-the-allowlist-proxy). Any
-`ghcr.io/rxbynerd/stirrup:latest` built from stirrup main after
-2026-09-08 has it.
+variables' spelling. A `ghcr.io/rxbynerd/stirrup:latest` built from a
+stirrup main commit that descends from #592's merge has it; confirm
+with the revision check in [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy) before assuming a
+given `:latest` picked it up.
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
@@ -378,9 +379,11 @@ token is refreshed after about twelve. The schedule is driven by the
 `expires_at` hairpin sets on every `sandbox_token_response`, so it is
 always in effect. A run sends at most eight `sandbox_token_request`s
 in total, the first exchange plus up to seven refreshes; hairpin's own
-per-stream cap is the same eight, and at a 15-minute TTL that budget
-outlasts the longest run stirrup permits. Every request past the cap
-is refused with an `is_error` response.
+per-stream cap is the same eight. stirrup caps a run's `timeout` at
+3600 seconds (`proto/harness/v1/harness.proto`), so at a 15-minute TTL
+the eight-request budget covers roughly 99 minutes and outlasts any
+permitted run. Every request past the cap is refused with an
+`is_error` response.
 
 A refusal or a failed refresh does not end the run. The harness stops
 refreshing, emits a `warning` event naming the expiry, and carries on
@@ -506,23 +509,25 @@ injected only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and
 `http_proxy` for plain-http URLs, so a clone through a plain-HTTP
 haybale hung until the tool timeout. [stirrup PR
 #592](https://github.com/rxbynerd/stirrup/pull/592) added the
-lowercase names and merged on 2026-09-09; an image built from stirrup
-main after 2026-09-08 carries it, and no branch build or
-`--harness-image` override is needed any more.
+lowercase names and merged on 2026-09-09; an image built from a
+stirrup main commit that descends from that merge carries it, and no
+branch build or `--harness-image` override is needed any more.
 
-stirrup republishes `:latest` from each main commit whose CI passes,
-so `:latest` lags main whenever main is red. To confirm which commit
-an image is:
+A build date does not settle it. Other commits landed on main minutes
+before #592 did that morning, and stirrup republishes `:latest` from
+each main commit whose CI passes, so `:latest` lags main whenever main
+is red. Read the revision an image was built from:
 
 ```sh
 podman image inspect ghcr.io/rxbynerd/stirrup:latest \
   --format '{{index .Labels "org.opencontainers.image.revision"}}'
 ```
 
-Check that revision contains the fix (`git -C <stirrup checkout>
-merge-base --is-ancestor <#592 merge commit> <revision>`), or pin the
-Deployment's `-harness-image` to the `sha-<short>` tag of a commit
-known to.
+That revision carries the fix when it descends from #592's merge
+(`git -C <stirrup checkout> merge-base --is-ancestor <#592 merge
+commit> <revision>`). Otherwise pin the Deployment's
+`-harness-image` to the `sha-<short>` tag of a commit known to carry
+it.
 
 ### Deploying haybale
 

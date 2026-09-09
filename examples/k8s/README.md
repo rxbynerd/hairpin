@@ -240,11 +240,12 @@ injected only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and
 `http_proxy` for plain-http URLs, so a clone through a plain-HTTP
 haybale hung until the tool timeout. [stirrup PR
 #592](https://github.com/rxbynerd/stirrup/pull/592) added the
-lowercase names; an image built from stirrup main after 2026-09-08
-carries it. `:latest` is republished only from a green main build, so
-confirm the image's
-`org.opencontainers.image.revision` label before assuming it has the
-fix — see [`docs/deployment.md`](../../docs/deployment.md#sandbox-egress-and-the-allowlist-proxy).
+lowercase names; an image built from a stirrup main commit that
+descends from that merge carries it. `:latest` is republished only
+from a green main build, so confirm that the image's
+`org.opencontainers.image.revision` label descends from #592's merge
+before assuming it has the fix — see
+[`docs/deployment.md`](../../docs/deployment.md#sandbox-egress-and-the-allowlist-proxy).
 
 ## Trust posture
 

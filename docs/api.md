@@ -222,7 +222,7 @@ Every RPC maps internal errors onto connect codes (`internal/api/api.go`):
 |---|---|
 | `JOB_STATUS_QUEUED` | Accepted and persisted; launcher not yet invoked. |
 | `JOB_STATUS_LAUNCHING` | Launcher invoked; the harness Job is being created. |
-| `JOB_STATUS_AWAITING_HARNESS` | Harness started but has not yet dialled back in with `ready`. |
+| `JOB_STATUS_AWAITING_HARNESS` | Harness started but has not yet dialled back in with `ready`. The reaper fails a job that never dials back — see [Job retention](deployment.md#job-retention). |
 | `JOB_STATUS_RUNNING` | `task_assignment` sent; the harness is executing. |
 | `JOB_STATUS_SUCCEEDED` | Terminal. `done.stop_reason` was `"success"`. |
 | `JOB_STATUS_FAILED` | Terminal. Any non-success, non-cancelled outcome — including launch errors and a stream that closed without a `done` event. See `Job.stop_reason` and `Job.error`. A stream that closes without `done` still means a crashed or killed harness: an orderly exit half-closes and waits up to two seconds for hairpin to end `RunTask` first ([stirrup PR #608](https://github.com/rxbynerd/stirrup/pull/608)), so a terminal event is not lost to teardown and a rejected RunConfig does not present as a crash. The wait is best-effort, not a delivery guarantee, and it does not apply when the harness takes a signal. |

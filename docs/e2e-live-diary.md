@@ -350,7 +350,9 @@ Fixed upstream, all merged on 2026-09-09:
   #594](https://github.com/rxbynerd/stirrup/issues/594)) is
   [stirrup PR #609](https://github.com/rxbynerd/stirrup/pull/609).
   The harness refreshes ahead of expiry, so a 15-minute TTL now
-  covers a run of any permitted length.
+  covers a run of any permitted length — stirrup caps `timeout` at
+  3600 seconds, and eight requests at a twelve-minute cadence reach
+  well past the hour.
 - The `codescanner` template-literal warnings ([stirrup
   #595](https://github.com/rxbynerd/stirrup/issues/595)) are
   [stirrup PR #597](https://github.com/rxbynerd/stirrup/pull/597),
