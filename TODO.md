@@ -9,20 +9,22 @@ is tracked in GitHub rather than as a session log:
 - [Add job retention and stale-job reconciliation](https://github.com/rxbynerd/hairpin/issues/3): `--retention` deletes terminal jobs past the window and the same reaper fails jobs that never dial back. Still open for a job that loses its harness mid-run, which is reported through `last_event_at` but never settled automatically.
 - [Support safe multi-replica deployments](https://github.com/rxbynerd/hairpin/issues/4) by moving live control-event routing out of process.
 - Verify the sandbox path with each documented RuntimeClass; the local kind recipe currently exercises only the cluster-default runtime.
+- A sandbox in `allowlist` mode reaches nothing, in-cluster services included, except through the egress proxy, so any deployment running a git profile must deploy `examples/k8s/egress-proxy.yaml` and keep its allowlist current (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-and-the-egress-proxy)). There is no server-side check that the proxy a profile names exists.
+- Run the sandbox token refresh end to end on the dev kind cluster: a `git` profile with `timeout: 1200` against the default 15-minute TTL, pushing after the first expiry, so a refreshed token is proved to reach the sandbox's credential helper. Needs a harness image carrying [stirrup PR #609](https://github.com/rxbynerd/stirrup/pull/609), which `ghcr.io/rxbynerd/stirrup:latest` picks up on the next green main build. Never exercised — every live run so far finished inside one token's lifetime ([`docs/e2e-live-diary.md`](docs/e2e-live-diary.md)).
 
 ## Protocol coverage
 
 - [Reject unsupported RunConfig capabilities during submission](https://github.com/rxbynerd/hairpin/issues/1) instead of allowing a job to reach a protocol request Hairpin cannot answer.
-- Wait on stirrup injecting lowercase `http_proxy`/`https_proxy`/`no_proxy` beside the uppercase names (branch `fix/lowercase-proxy-env`). git, through libcurl, honours only the lowercase spelling for plain-http URLs, so a clone through a plain-HTTP haybale in `allowlist` mode hangs until the tool timeout and `git-smoke-test` needs a harness image built from that branch (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-and-the-egress-proxy)).
 - Narrow `haybale-policy` from the `hp-*` ceiling to per-caller rules. `scripts/dev/haybale-github.sh` widens it further still, to every repository under one GitHub owner.
-- stirrup's harness emits no `tool_call` event on the control-plane stream, only `tool_result`, so a run's timeline holds results with no inputs and auditing a call means reading the harness Pod log. Hairpin records the event when it arrives; emitting it is upstream.
+- Correlate `tool_call.id` with `tool_result.tool_use_id` in the web UI's timeline and mark a call still open at `done` as orphaned. Hairpin records both events verbatim and joins nothing ([`docs/api.md`](docs/api.md#tool-calls-and-results)); today a reader pairs them by eye.
+- Re-check the retention and cancellation paths against a harness carrying [stirrup PR #608](https://github.com/rxbynerd/stirrup/pull/608). A terminal `done` that used to be lost to the harness's connection teardown now arrives, so a job that previously settled through `closeUnfinished` may now settle on its real stop reason.
 - Rotate the sandbox-token signing key without a haybale restart; haybale reads the JWKS file once at startup.
 - Add follow-up turns and batch execution only with end-to-end lifecycle and cancellation semantics. Asynchronous tool results are answered for the two memory tools only.
 - [Reconcile permission state after harness-side timeouts](https://github.com/rxbynerd/hairpin/issues/2) so a late API response cannot appear effective after the harness has moved on.
 
 ## Shared memory
 
-Memory ([`docs/memory.md`](docs/memory.md)) runs on published images: `ghcr.io/rxbynerd/stirrup:latest` carries the `tools.controlPlane` RunConfig surface from [stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586), and `ghcr.io/rxbynerd/billet:latest` pulls.
+Memory ([`docs/memory.md`](docs/memory.md)) runs on published images. Both upstream dependencies are merged: the `tools.controlPlane` RunConfig surface in stirrup, and Billet's container image.
 
 - Recall and save memory without the model's cooperation: search at task start and save an outcome at `done`, rather than relying on the tool descriptions steering the model to call them.
 - Partition memory per profile or per caller instead of one Billet namespace per deployment, once Billet's contract allows a caller-supplied namespace.
