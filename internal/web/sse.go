@@ -64,14 +64,14 @@ func (h *handler) events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				fmt.Fprint(w, "event: eof\ndata: {}\n\n")
+				_, _ = fmt.Fprint(w, "event: eof\ndata: {}\n\n")
 				flusher.Flush()
 				return
 			}
 			writeSSEEvent(w, ev)
 			flusher.Flush()
 		case <-heartbeat.C:
-			fmt.Fprint(w, ": heartbeat\n\n")
+			_, _ = fmt.Fprint(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case <-ctx.Done():
 			return
@@ -92,14 +92,14 @@ func writeSSEEvent(w http.ResponseWriter, ev store.Event) {
 	if !sseTypeRe.MatchString(typ) {
 		typ = "unknown"
 	}
-	fmt.Fprintf(w, "id: %s\n", ev.ID)
-	fmt.Fprintf(w, "event: %s\n", typ)
+	_, _ = fmt.Fprintf(w, "id: %s\n", ev.ID)
+	_, _ = fmt.Fprintf(w, "event: %s\n", typ)
 	payload := ev.PayloadJSON
 	if payload == "" {
 		payload = "{}"
 	}
 	for _, line := range strings.Split(payload, "\n") {
-		fmt.Fprintf(w, "data: %s\n", line)
+		_, _ = fmt.Fprintf(w, "data: %s\n", line)
 	}
-	fmt.Fprint(w, "\n")
+	_, _ = fmt.Fprint(w, "\n")
 }
