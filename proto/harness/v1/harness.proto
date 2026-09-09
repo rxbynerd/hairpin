@@ -87,7 +87,10 @@ service HarnessService {
 //                event carrying stop_reason "error".
 //
 //   "warning"
-//     - message: human-readable warning (non-fatal).
+//     - message:    human-readable warning (non-fatal).
+//     - request_id: set when the warning reports a dropped user_response
+//                   (empty text, or the queue of 16 was full); echoes that
+//                   ControlEvent's request_id so the sender can retry.
 //
 //   "heartbeat"
 //     - (no additional fields) Sent every 30 seconds during execution to
@@ -120,13 +123,15 @@ service HarnessService {
 //     - audience:   the intended JWT `aud` claim for the sandbox identity
 //                   token (e.g. "https://haybale.internal"). Informational —
 //                   the control plane may override it.
-//     Sent once per run, after task_assignment and before the sandbox is
-//     created, when the run wants a sandbox identity token. Deliberately
-//     carries no harness-asserted identity field: the control plane derives
-//     the run identity from the authenticated stream the task was assigned
-//     on, never from the request body. The harness blocks on the matching
-//     sandbox_token_response under a fail-closed 60s timeout; a timeout
-//     aborts the run before any sandbox is created.
+//     Sent after task_assignment and before the sandbox is created, when
+//     the run wants a sandbox identity token, then again ahead of each
+//     expires_at the control plane reports — at most eight per run.
+//     Deliberately carries no harness-asserted identity field: the control
+//     plane derives the run identity from the authenticated stream the task
+//     was assigned on, never from the request body. The harness blocks on
+//     the matching sandbox_token_response under a fail-closed 60s timeout;
+//     on the first request a timeout aborts the run before any sandbox is
+//     created, on a refresh it stops refreshing and emits a "warning".
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
@@ -171,6 +176,8 @@ message HarnessEvent {
   // Unique request ID for correlation. Set on "permission_request" and
   // "tool_result_request" events. The control plane must echo this back in
   // the corresponding permission_response / tool_result_response ControlEvent.
+  // Also set on a "warning" that reports a dropped user_response, echoing
+  // that ControlEvent's request_id.
   string request_id = 11;
 
   // The tool name. Set on "permission_request" (tool requesting permission)
@@ -197,9 +204,34 @@ message HarnessEvent {
 //             the first ControlEvent sent after the stream opens.
 //
 //   "user_response"
-//     - user_response: free-text response to a model prompt that asked for
-//                      user input. Injected into the conversation as a user
-//                      message on the next turn.
+//     - user_response: free-text operator input for the model. During an
+//                      active run it is queued (bounded FIFO of 16) and
+//                      injected as a user message at the run's next turn
+//                      boundary — after the pending tool results are
+//                      appended and before the next model call — in
+//                      arrival order. If the model ends its turn while
+//                      input is queued, the run continues with that input
+//                      instead of finishing. With no run active inside the
+//                      follow-up grace window, the oldest queued event
+//                      starts a fresh run with its text as the prompt and
+//                      anything queued behind it joins that run at its
+//                      first turn boundary. The text gets the same
+//                      treatment as dynamicContext — XML/HTML tags
+//                      stripped, capped at 50,000 bytes — with each
+//                      alteration reported by a "warning" echoing
+//                      request_id whose message starts
+//                      "user_response sanitized:". An empty text (before
+//                      or after that treatment), one arriving when the
+//                      queue is full, or one arriving after a "cancel" is
+//                      dropped and reported by a "warning" whose message
+//                      starts "user_response dropped:"; nothing is dropped
+//                      silently, including input still queued when the
+//                      session ends. Injected text is screened like the
+//                      initial prompt (Rule-of-Two observation and the
+//                      pre-turn guard, which classifies it regardless of
+//                      its length).
+//     - request_id:    optional client-chosen correlation token, echoed on
+//                      every "warning" about this user_response.
 //
 //   "permission_response"
 //     - request_id: must match the request_id from the corresponding
@@ -219,20 +251,31 @@ message HarnessEvent {
 //                   see as a tool error rather than a successful result.
 //
 //   "cancel"
-//     - (no additional fields) Signals that the run should be aborted. The
-//       harness terminates the run within one turn boundary: any in-flight
-//       provider stream or tool call is cancelled via context propagation,
-//       no further turns are started, git finalisation still runs, and the
-//       final "done" HarnessEvent carries stop_reason="cancelled". If the
-//       harness is in the follow-up grace window (no active run), the
-//       stream closes promptly without an additional "done" event.
+//     - (no additional fields) Ends the session. An active run terminates
+//       within one turn boundary: any in-flight provider stream or tool
+//       call is cancelled via context propagation, no further turns are
+//       started, git finalisation still runs, and the final "done"
+//       HarnessEvent carries stop_reason="cancelled". Queued user_response
+//       input is discarded (each is reported by a "warning"); cancel always
+//       wins over it. No follow-up grace window opens after a cancelled run,
+//       and a cancel received with no run active — including in the window
+//       between a run's "done" and the next run, or inside the grace window
+//       — closes the stream promptly without an additional "done". One
+//       cancel is always enough to stop the harness.
 //
 //   "batch_result"
 //     - request_id: must match a previously received batch_submission
 //                   HarnessEvent.request_id.
-//     - content:    JSON-encoded BatchResult payload (response or err).
-//     - is_error:   true for non-success result types (batch_expired,
-//                   batch_cancelled, invalid_request_error, server_error).
+//     - content:    JSON-encoded BatchResult payload. Canonical: exactly
+//                   one of `response` (success) and `err` (failure, with
+//                   type batch_expired, batch_cancelled,
+//                   invalid_request_error, or server_error) must be set.
+//                   Setting neither or both is an invalid_request_error.
+//     - is_error:   optional and redundant here. When present it must
+//                   agree with content — true iff content carries `err`.
+//                   A contradiction is reported as an
+//                   invalid_request_error naming both, never resolved in
+//                   favour of the flag.
 //
 //   "sandbox_token_response"
 //     - request_id:  must match the request_id from the corresponding
@@ -241,13 +284,16 @@ message HarnessEvent {
 //                    never logged, traced, or persisted to RunConfig —
 //                    treated as opaque secret material for the run's
 //                    lifetime.
-//     - expires_at:  optional Unix-seconds expiry of token, so the harness
-//                    can warn (scrub-safe) when it is shorter than the
-//                    run's configured wall-clock budget.
+//     - expires_at:  optional Unix-seconds expiry of token. When set, the
+//                    harness sends a fresh sandbox_token_request ahead of
+//                    it and delivers the new token into the sandbox; when
+//                    absent, the token as issued must outlive the run.
 //     - is_error:    when true, the control plane could not issue a token;
-//                    reason carries a human-readable explanation. The
-//                    harness treats this the same as a timeout — the run
-//                    aborts before the sandbox is created.
+//                    reason carries a human-readable explanation. On the
+//                    initial request the harness treats this the same as
+//                    a timeout — the run aborts before the sandbox is
+//                    created; on a refresh it stops refreshing, keeps the
+//                    previous token, and emits a "warning".
 message ControlEvent {
   // Required. The event type discriminator.
   // Valid values: "task_assignment", "user_response", "cancel",
@@ -259,12 +305,17 @@ message ControlEvent {
   // composition root that drives all harness behaviour for the run.
   RunConfig task = 2;
 
-  // Free-text user response. Set on "user_response" events.
+  // Free-text operator input. Set on "user_response" events. Queued and
+  // injected at the active run's next turn boundary, or the prompt of the
+  // next run in the follow-up grace window; see the "user_response" entry
+  // above for the queue bound and rejection reporting.
   string user_response = 3;
 
   // Correlates the response with the originating request HarnessEvent.
   // Set on "permission_response" and "tool_result_response" events. Must
-  // match a previously received HarnessEvent.request_id.
+  // match a previously received HarnessEvent.request_id. Optional on
+  // "user_response" as a client-chosen token echoed on the "warning" that
+  // reports the event dropped.
   string request_id = 4;
 
   // The permission decision. Set on "permission_response" events.
@@ -277,16 +328,20 @@ message ControlEvent {
   // plane could not issue a token).
   string reason = 6;
 
-  // Async tool result payload. Set on "tool_result_response" events. Delivered
-  // to the agentic loop verbatim as the async tool's output content.
+  // Async tool result payload. Set on "tool_result_response" events and
+  // delivered to the agentic loop verbatim as the async tool's output
+  // content; on "batch_result" events it is the JSON-encoded BatchResult
+  // and the canonical outcome discriminator.
   string content = 7;
 
   // When true on a "tool_result_response", the loop marks the resulting
   // ToolResult as an error so the model sees it as a tool failure. When true
   // on a "sandbox_token_response", the control plane could not issue a
   // token; reason carries the explanation and token / expires_at are unset.
-  // Wrapped to distinguish unset from explicit-false (proto3 scalar
-  // default).
+  // On a "batch_result" it is redundant: content decides the outcome, and
+  // a value disagreeing with content makes the event an
+  // invalid_request_error. Wrapped to distinguish unset from
+  // explicit-false (proto3 scalar default).
   OptionalBool is_error = 8;
 
   // The signed JWT sandbox identity token. Set on "sandbox_token_response"
@@ -296,9 +351,12 @@ message ControlEvent {
   string token = 9;
 
   // Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
-  // events. Declared `optional` so unset is wire-distinguishable from an
-  // explicit 0 (epoch), letting the harness tell "the control plane did not
-  // report an expiry" from "the token expires at the epoch".
+  // events. When present the harness refreshes the token ahead of it (a
+  // new sandbox_token_request at 80% of the remaining lifetime); when
+  // absent no refresh is scheduled and the token must outlive the run.
+  // Declared `optional` so unset is wire-distinguishable from an explicit 0
+  // (epoch), letting the harness tell "the control plane did not report an
+  // expiry" from "the token expires at the epoch".
   optional int64 expires_at = 10;
 }
 
@@ -405,19 +463,28 @@ message RunConfig {
   // Max: 50,000,000.
   optional int32 max_token_budget = 17;
 
-  // Optional. Maximum cost in USD for the run. The loop terminates with
-  // stop_reason "budget_exceeded" if this is hit. Max: 100.00.
-  optional double max_cost_budget = 18;
+  // Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
+  // computes no cost, so no run terminates on this budget. Setting it logs a
+  // warning at config validation. Cap spend in the control plane from
+  // provider billing data.
+  optional double max_cost_budget = 18 [deprecated = true];
 
-  // Required. Wall-clock timeout in seconds for the entire run. The loop
-  // terminates with stop_reason "timeout" when this expires.
-  // Range: 1-3600.
+  // Required. Wall-clock timeout in seconds for one run. The primary run's
+  // budget starts when this RunConfig is accepted (component construction
+  // counts against it); every follow-up run receives a fresh budget of
+  // the same length when its user_response is taken up. The loop
+  // terminates the run with stop_reason "timeout" when the budget
+  // expires, and every budget derived from the run deadline — a batch
+  // wait among them — is bounded by it. There is no session-wide cap: a
+  // session is bounded by this per-run budget, the follow_up_grace idle
+  // window, "cancel", and the process shutdown signal. Range: 1-3600.
   optional int32 timeout = 19;
 
-  // Optional. Seconds to keep the gRPC transport open after the primary run
-  // completes, waiting for follow-up user_response events that trigger
-  // additional runs. 0 or unset means disabled (stream closes after done).
-  // Max: 3600.
+  // Optional. Idle seconds to keep the gRPC transport open after each run
+  // completes (including its result-sink and workspace-export steps),
+  // waiting for a user_response that starts the next run. The window
+  // restarts after every run; a run in progress never consumes it. 0 or
+  // unset means disabled (stream closes after done). Max: 3600.
   optional int32 follow_up_grace = 21;
 
   // Optional. Structured log verbosity for this run.
@@ -928,7 +995,8 @@ message RunTrace {
   // Total output tokens consumed across all provider calls.
   int32 output_tokens = 4;
 
-  // Estimated total cost in USD for the run (based on per-model pricing).
+  // Always 0: no cost accounting is implemented. The harness carries no
+  // pricing table and computes no cost.
   double cost_usd = 5;
 
   // Wall-clock duration of the run in milliseconds.
@@ -1063,10 +1131,12 @@ message BatchProviderConfig {
 
   // Harness-side wall-clock cap on the batch wait, in seconds. Declared
   // `optional` so an unset value is wire-distinguishable from explicit
-  // zero: ValidateRunConfig fills the default (86400) only when nil and
+  // zero: ValidateRunConfig fills the default only when nil and
   // enabled=true, so a phase-2 adapter can still tell "operator did not
-  // configure this" from "default applied". Must be in (0, 86400] when
-  // set.
+  // configure this" from "default applied". The run context is bound to
+  // RunConfig.timeout, so this must be in (0, timeout] when set, and
+  // defaults to timeout when unset. timeout is itself capped at 3600
+  // seconds on both the CLI and stirrup job paths.
   optional int32 max_wait_seconds = 2;
 
   // Enables direct HTTP polling from the harness process. Required when
@@ -1074,7 +1144,13 @@ message BatchProviderConfig {
   bool harness_side_polling = 3;
 
   // Switches to the streaming adapter for a turn when the harness-side
-  // max_wait_seconds fires. Defaults to false.
+  // max_wait_seconds fires. Defaults to false. Requires max_wait_seconds
+  // strictly below RunConfig.timeout, and ValidateRunConfig rejects the
+  // pair otherwise: the run context is armed before the turn while the
+  // batch cap starts only once the wait blocks, so a cap equal to the
+  // timeout can never expire first and the fallback could never fire.
+  // The headroom must also cover every preceding batch turn, whose wait
+  // is charged against the same run deadline.
   bool fallback_on_timeout = 4;
 
   // When a single run is cancelled, cancel the entire bundled provider
@@ -1551,12 +1627,15 @@ message ExecutorConfig {
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
-// credential for the sandbox. The harness sends one
-// sandbox_token_request after task assignment and before sandbox
-// creation, blocks fail-closed for up to 60 seconds on the matching
-// sandbox_token_response, then injects the returned JWT into the sandbox
-// environment. The JWT is never written to RunConfig, a trace, or a
-// transcript. Wire contract:
+// credential for the sandbox. The harness sends a sandbox_token_request
+// after task assignment and before sandbox creation, blocks fail-closed
+// for up to 60 seconds on the matching sandbox_token_response, then
+// delivers the returned JWT into the sandbox as a file the composed git
+// credential helper reads (plus a copy in the env_var environment
+// variable as issued at creation). When the response carries expires_at,
+// further requests follow ahead of each expiry — at most eight per run —
+// and each new token replaces the file. The JWT is never written to
+// RunConfig, a trace, or a transcript. Wire contract:
 // docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
 message SandboxIdentityConfig {
   // Required. The token issuer. Closed set: only "control-plane" is
@@ -1577,7 +1656,8 @@ message SandboxIdentityConfig {
 // GitProxyConfig rewrites git operations against the named hosts through
 // a git-credential proxy, authenticating with the token
 // SandboxIdentityConfig requested. Every field here is non-secret: the
-// JWT travels only in the environment variable token_env_var names.
+// JWT travels only in the token file the composed credential helper
+// reads and in the environment variable token_env_var names.
 message GitProxyConfig {
   // Required when the sub-message is present. The proxy's base URL — an
   // absolute http/https URL with a host, e.g.
