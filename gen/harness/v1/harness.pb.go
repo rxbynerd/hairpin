@@ -75,7 +75,10 @@ const (
 //	             event carrying stop_reason "error".
 //
 //	"warning"
-//	  - message: human-readable warning (non-fatal).
+//	  - message:    human-readable warning (non-fatal).
+//	  - request_id: set when the warning reports a dropped user_response
+//	                (empty text, or the queue of 16 was full); echoes that
+//	                ControlEvent's request_id so the sender can retry.
 //
 //	"heartbeat"
 //	  - (no additional fields) Sent every 30 seconds during execution to
@@ -108,13 +111,15 @@ const (
 //	  - audience:   the intended JWT `aud` claim for the sandbox identity
 //	                token (e.g. "https://haybale.internal"). Informational —
 //	                the control plane may override it.
-//	  Sent once per run, after task_assignment and before the sandbox is
-//	  created, when the run wants a sandbox identity token. Deliberately
-//	  carries no harness-asserted identity field: the control plane derives
-//	  the run identity from the authenticated stream the task was assigned
-//	  on, never from the request body. The harness blocks on the matching
-//	  sandbox_token_response under a fail-closed 60s timeout; a timeout
-//	  aborts the run before any sandbox is created.
+//	  Sent after task_assignment and before the sandbox is created, when
+//	  the run wants a sandbox identity token, then again ahead of each
+//	  expires_at the control plane reports — at most eight per run.
+//	  Deliberately carries no harness-asserted identity field: the control
+//	  plane derives the run identity from the authenticated stream the task
+//	  was assigned on, never from the request body. The harness blocks on
+//	  the matching sandbox_token_response under a fail-closed 60s timeout;
+//	  on the first request a timeout aborts the run before any sandbox is
+//	  created, on a refresh it stops refreshing and emits a "warning".
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -152,6 +157,8 @@ type HarnessEvent struct {
 	// Unique request ID for correlation. Set on "permission_request" and
 	// "tool_result_request" events. The control plane must echo this back in
 	// the corresponding permission_response / tool_result_response ControlEvent.
+	// Also set on a "warning" that reports a dropped user_response, echoing
+	// that ControlEvent's request_id.
 	RequestId string `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The tool name. Set on "permission_request" (tool requesting permission)
 	// and "tool_result_request" (async tool whose result is being requested).
@@ -305,9 +312,34 @@ func (x *HarnessEvent) GetAudience() string {
 //	          the first ControlEvent sent after the stream opens.
 //
 //	"user_response"
-//	  - user_response: free-text response to a model prompt that asked for
-//	                   user input. Injected into the conversation as a user
-//	                   message on the next turn.
+//	  - user_response: free-text operator input for the model. During an
+//	                   active run it is queued (bounded FIFO of 16) and
+//	                   injected as a user message at the run's next turn
+//	                   boundary — after the pending tool results are
+//	                   appended and before the next model call — in
+//	                   arrival order. If the model ends its turn while
+//	                   input is queued, the run continues with that input
+//	                   instead of finishing. With no run active inside the
+//	                   follow-up grace window, the oldest queued event
+//	                   starts a fresh run with its text as the prompt and
+//	                   anything queued behind it joins that run at its
+//	                   first turn boundary. The text gets the same
+//	                   treatment as dynamicContext — XML/HTML tags
+//	                   stripped, capped at 50,000 bytes — with each
+//	                   alteration reported by a "warning" echoing
+//	                   request_id whose message starts
+//	                   "user_response sanitized:". An empty text (before
+//	                   or after that treatment), one arriving when the
+//	                   queue is full, or one arriving after a "cancel" is
+//	                   dropped and reported by a "warning" whose message
+//	                   starts "user_response dropped:"; nothing is dropped
+//	                   silently, including input still queued when the
+//	                   session ends. Injected text is screened like the
+//	                   initial prompt (Rule-of-Two observation and the
+//	                   pre-turn guard, which classifies it regardless of
+//	                   its length).
+//	  - request_id:    optional client-chosen correlation token, echoed on
+//	                   every "warning" about this user_response.
 //
 //	"permission_response"
 //	  - request_id: must match the request_id from the corresponding
@@ -327,20 +359,31 @@ func (x *HarnessEvent) GetAudience() string {
 //	                see as a tool error rather than a successful result.
 //
 //	"cancel"
-//	  - (no additional fields) Signals that the run should be aborted. The
-//	    harness terminates the run within one turn boundary: any in-flight
-//	    provider stream or tool call is cancelled via context propagation,
-//	    no further turns are started, git finalisation still runs, and the
-//	    final "done" HarnessEvent carries stop_reason="cancelled". If the
-//	    harness is in the follow-up grace window (no active run), the
-//	    stream closes promptly without an additional "done" event.
+//	  - (no additional fields) Ends the session. An active run terminates
+//	    within one turn boundary: any in-flight provider stream or tool
+//	    call is cancelled via context propagation, no further turns are
+//	    started, git finalisation still runs, and the final "done"
+//	    HarnessEvent carries stop_reason="cancelled". Queued user_response
+//	    input is discarded (each is reported by a "warning"); cancel always
+//	    wins over it. No follow-up grace window opens after a cancelled run,
+//	    and a cancel received with no run active — including in the window
+//	    between a run's "done" and the next run, or inside the grace window
+//	    — closes the stream promptly without an additional "done". One
+//	    cancel is always enough to stop the harness.
 //
 //	"batch_result"
 //	  - request_id: must match a previously received batch_submission
 //	                HarnessEvent.request_id.
-//	  - content:    JSON-encoded BatchResult payload (response or err).
-//	  - is_error:   true for non-success result types (batch_expired,
-//	                batch_cancelled, invalid_request_error, server_error).
+//	  - content:    JSON-encoded BatchResult payload. Canonical: exactly
+//	                one of `response` (success) and `err` (failure, with
+//	                type batch_expired, batch_cancelled,
+//	                invalid_request_error, or server_error) must be set.
+//	                Setting neither or both is an invalid_request_error.
+//	  - is_error:   optional and redundant here. When present it must
+//	                agree with content — true iff content carries `err`.
+//	                A contradiction is reported as an
+//	                invalid_request_error naming both, never resolved in
+//	                favour of the flag.
 //
 //	"sandbox_token_response"
 //	  - request_id:  must match the request_id from the corresponding
@@ -349,13 +392,16 @@ func (x *HarnessEvent) GetAudience() string {
 //	                 never logged, traced, or persisted to RunConfig —
 //	                 treated as opaque secret material for the run's
 //	                 lifetime.
-//	  - expires_at:  optional Unix-seconds expiry of token, so the harness
-//	                 can warn (scrub-safe) when it is shorter than the
-//	                 run's configured wall-clock budget.
+//	  - expires_at:  optional Unix-seconds expiry of token. When set, the
+//	                 harness sends a fresh sandbox_token_request ahead of
+//	                 it and delivers the new token into the sandbox; when
+//	                 absent, the token as issued must outlive the run.
 //	  - is_error:    when true, the control plane could not issue a token;
-//	                 reason carries a human-readable explanation. The
-//	                 harness treats this the same as a timeout — the run
-//	                 aborts before the sandbox is created.
+//	                 reason carries a human-readable explanation. On the
+//	                 initial request the harness treats this the same as
+//	                 a timeout — the run aborts before the sandbox is
+//	                 created; on a refresh it stops refreshing, keeps the
+//	                 previous token, and emits a "warning".
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -367,11 +413,16 @@ type ControlEvent struct {
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
 	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
-	// Free-text user response. Set on "user_response" events.
+	// Free-text operator input. Set on "user_response" events. Queued and
+	// injected at the active run's next turn boundary, or the prompt of the
+	// next run in the follow-up grace window; see the "user_response" entry
+	// above for the queue bound and rejection reporting.
 	UserResponse string `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
 	// Correlates the response with the originating request HarnessEvent.
 	// Set on "permission_response" and "tool_result_response" events. Must
-	// match a previously received HarnessEvent.request_id.
+	// match a previously received HarnessEvent.request_id. Optional on
+	// "user_response" as a client-chosen token echoed on the "warning" that
+	// reports the event dropped.
 	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The permission decision. Set on "permission_response" events.
 	// True = allow the tool call to proceed. False = deny.
@@ -381,15 +432,19 @@ type ControlEvent struct {
 	// "sandbox_token_response" events when is_error is true (why the control
 	// plane could not issue a token).
 	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
-	// Async tool result payload. Set on "tool_result_response" events. Delivered
-	// to the agentic loop verbatim as the async tool's output content.
+	// Async tool result payload. Set on "tool_result_response" events and
+	// delivered to the agentic loop verbatim as the async tool's output
+	// content; on "batch_result" events it is the JSON-encoded BatchResult
+	// and the canonical outcome discriminator.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
 	// When true on a "tool_result_response", the loop marks the resulting
 	// ToolResult as an error so the model sees it as a tool failure. When true
 	// on a "sandbox_token_response", the control plane could not issue a
 	// token; reason carries the explanation and token / expires_at are unset.
-	// Wrapped to distinguish unset from explicit-false (proto3 scalar
-	// default).
+	// On a "batch_result" it is redundant: content decides the outcome, and
+	// a value disagreeing with content makes the event an
+	// invalid_request_error. Wrapped to distinguish unset from
+	// explicit-false (proto3 scalar default).
 	IsError *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
 	// The signed JWT sandbox identity token. Set on "sandbox_token_response"
 	// events when is_error is false. SENSITIVE: never logged, traced, or
@@ -397,9 +452,12 @@ type ControlEvent struct {
 	// material for the run's lifetime.
 	Token string `protobuf:"bytes,9,opt,name=token,proto3" json:"token,omitempty"`
 	// Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
-	// events. Declared `optional` so unset is wire-distinguishable from an
-	// explicit 0 (epoch), letting the harness tell "the control plane did not
-	// report an expiry" from "the token expires at the epoch".
+	// events. When present the harness refreshes the token ahead of it (a
+	// new sandbox_token_request at 80% of the remaining lifetime); when
+	// absent no refresh is scheduled and the token must outlive the run.
+	// Declared `optional` so unset is wire-distinguishable from an explicit 0
+	// (epoch), letting the harness tell "the control plane did not report an
+	// expiry" from "the token expires at the epoch".
 	ExpiresAt     *int64 `protobuf:"varint,10,opt,name=expires_at,json=expiresAt,proto3,oneof" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -623,17 +681,28 @@ type RunConfig struct {
 	// terminates with stop_reason "budget_exceeded" if this is hit.
 	// Max: 50,000,000.
 	MaxTokenBudget *int32 `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
-	// Optional. Maximum cost in USD for the run. The loop terminates with
-	// stop_reason "budget_exceeded" if this is hit. Max: 100.00.
+	// Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
+	// computes no cost, so no run terminates on this budget. Setting it logs a
+	// warning at config validation. Cap spend in the control plane from
+	// provider billing data.
+	//
+	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
-	// Required. Wall-clock timeout in seconds for the entire run. The loop
-	// terminates with stop_reason "timeout" when this expires.
-	// Range: 1-3600.
+	// Required. Wall-clock timeout in seconds for one run. The primary run's
+	// budget starts when this RunConfig is accepted (component construction
+	// counts against it); every follow-up run receives a fresh budget of
+	// the same length when its user_response is taken up. The loop
+	// terminates the run with stop_reason "timeout" when the budget
+	// expires, and every budget derived from the run deadline — a batch
+	// wait among them — is bounded by it. There is no session-wide cap: a
+	// session is bounded by this per-run budget, the follow_up_grace idle
+	// window, "cancel", and the process shutdown signal. Range: 1-3600.
 	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
-	// Optional. Seconds to keep the gRPC transport open after the primary run
-	// completes, waiting for follow-up user_response events that trigger
-	// additional runs. 0 or unset means disabled (stream closes after done).
-	// Max: 3600.
+	// Optional. Idle seconds to keep the gRPC transport open after each run
+	// completes (including its result-sink and workspace-export steps),
+	// waiting for a user_response that starts the next run. The window
+	// restarts after every run; a run in progress never consumes it. 0 or
+	// unset means disabled (stream closes after done). Max: 3600.
 	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
@@ -898,6 +967,7 @@ func (x *RunConfig) GetMaxTokenBudget() int32 {
 	return 0
 }
 
+// Deprecated: Marked as deprecated in harness/v1/harness.proto.
 func (x *RunConfig) GetMaxCostBudget() float64 {
 	if x != nil && x.MaxCostBudget != nil {
 		return *x.MaxCostBudget
@@ -2064,7 +2134,8 @@ type RunTrace struct {
 	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	// Total output tokens consumed across all provider calls.
 	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	// Estimated total cost in USD for the run (based on per-model pricing).
+	// Always 0: no cost accounting is implemented. The harness carries no
+	// pricing table and computes no cost.
 	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	// Wall-clock duration of the run in milliseconds.
 	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
@@ -2408,16 +2479,24 @@ type BatchProviderConfig struct {
 	Enabled bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	// Harness-side wall-clock cap on the batch wait, in seconds. Declared
 	// `optional` so an unset value is wire-distinguishable from explicit
-	// zero: ValidateRunConfig fills the default (86400) only when nil and
+	// zero: ValidateRunConfig fills the default only when nil and
 	// enabled=true, so a phase-2 adapter can still tell "operator did not
-	// configure this" from "default applied". Must be in (0, 86400] when
-	// set.
+	// configure this" from "default applied". The run context is bound to
+	// RunConfig.timeout, so this must be in (0, timeout] when set, and
+	// defaults to timeout when unset. timeout is itself capped at 3600
+	// seconds on both the CLI and stirrup job paths.
 	MaxWaitSeconds *int32 `protobuf:"varint,2,opt,name=max_wait_seconds,json=maxWaitSeconds,proto3,oneof" json:"max_wait_seconds,omitempty"`
 	// Enables direct HTTP polling from the harness process. Required when
 	// transport.type == "stdio"; rejected with transport.type == "grpc".
 	HarnessSidePolling bool `protobuf:"varint,3,opt,name=harness_side_polling,json=harnessSidePolling,proto3" json:"harness_side_polling,omitempty"`
 	// Switches to the streaming adapter for a turn when the harness-side
-	// max_wait_seconds fires. Defaults to false.
+	// max_wait_seconds fires. Defaults to false. Requires max_wait_seconds
+	// strictly below RunConfig.timeout, and ValidateRunConfig rejects the
+	// pair otherwise: the run context is armed before the turn while the
+	// batch cap starts only once the wait blocks, so a cap equal to the
+	// timeout can never expire first and the fallback could never fire.
+	// The headroom must also cover every preceding batch turn, whose wait
+	// is charged against the same run deadline.
 	FallbackOnTimeout bool `protobuf:"varint,4,opt,name=fallback_on_timeout,json=fallbackOnTimeout,proto3" json:"fallback_on_timeout,omitempty"`
 	// When a single run is cancelled, cancel the entire bundled provider
 	// batch (gRPC transport only). Defaults to false. Rejected with
@@ -3609,12 +3688,15 @@ func (x *ExecutorConfig) GetGitProxy() *GitProxyConfig {
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
-// credential for the sandbox. The harness sends one
-// sandbox_token_request after task assignment and before sandbox
-// creation, blocks fail-closed for up to 60 seconds on the matching
-// sandbox_token_response, then injects the returned JWT into the sandbox
-// environment. The JWT is never written to RunConfig, a trace, or a
-// transcript. Wire contract:
+// credential for the sandbox. The harness sends a sandbox_token_request
+// after task assignment and before sandbox creation, blocks fail-closed
+// for up to 60 seconds on the matching sandbox_token_response, then
+// delivers the returned JWT into the sandbox as a file the composed git
+// credential helper reads (plus a copy in the env_var environment
+// variable as issued at creation). When the response carries expires_at,
+// further requests follow ahead of each expiry — at most eight per run —
+// and each new token replaces the file. The JWT is never written to
+// RunConfig, a trace, or a transcript. Wire contract:
 // docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
 type SandboxIdentityConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -3687,7 +3769,8 @@ func (x *SandboxIdentityConfig) GetEnvVar() string {
 // GitProxyConfig rewrites git operations against the named hosts through
 // a git-credential proxy, authenticating with the token
 // SandboxIdentityConfig requested. Every field here is non-secret: the
-// JWT travels only in the environment variable token_env_var names.
+// JWT travels only in the token file the composed credential helper
+// reads and in the environment variable token_env_var names.
 type GitProxyConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required when the sub-message is present. The proxy's base URL — an
@@ -4784,7 +4867,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\x03H\x00R\texpiresAt\x88\x01\x01B\r\n" +
 	"\v_expires_at\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xf6\x12\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\x12\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -4804,8 +4887,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\rtrace_emitter\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceEmitterConfigR\ftraceEmitter\x125\n" +
 	"\x05tools\x18\x0f \x01(\v2\x1f.stirrup.harness.v1.ToolsConfigR\x05tools\x12\x1b\n" +
 	"\tmax_turns\x18\x10 \x01(\x05R\bmaxTurns\x12-\n" +
-	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12+\n" +
-	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
+	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12/\n" +
+	"\x0fmax_cost_budget\x18\x12 \x01(\x01B\x02\x18\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
 	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +

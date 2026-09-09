@@ -113,11 +113,14 @@ var knownStopReasons = map[string]struct{}{
 	StopHarnessNeverConnected: {},
 }
 
-// knownEventTypes is the HarnessEvent.type vocabulary hairpin serves.
-// A type stirrup adds later is counted as "other" until it is listed.
+// knownEventTypes is the harness event and control event type vocabulary
+// hairpin serves. A type stirrup adds later is counted as "other" until
+// it is listed.
 var knownEventTypes = map[string]struct{}{
 	"ready":                  {},
 	"text_delta":             {},
+	"tool_call":              {},
+	"tool_result":            {},
 	"heartbeat":              {},
 	"permission_request":     {},
 	"error":                  {},
