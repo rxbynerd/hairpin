@@ -72,16 +72,15 @@ just kind-down
 key or any egress from the cluster. To run against a real model, `just
 openrouter <op-ref>` adds an OpenRouter-backed `openrouter` profile,
 reading the API key from 1Password; submit with
-`{"profile": "openrouter"}`. Re-run it after each `just deploy`.
+`{"profile": "openrouter"}`. `just provider <name> <base-url> <model>
+[op-ref]` does the same for any other openai-compatible provider. Re-run
+either after each `just deploy`.
 
-The fake provider's run calls the memory tools, so both smoke tests
-depend on two upstream pieces that are not yet published: `just
-deploy` builds Billet from a sibling checkout at `BILLET_DIR` (default
-`../billet`) because `ghcr.io/rxbynerd/billet:latest` does not exist
-until [billet PR #1](https://github.com/rxbynerd/billet/pull/1)
-merges, and the harness must be built from
-[stirrup PR #586](https://github.com/rxbynerd/stirrup/pull/586) rather
-than the published `stirrup:latest`. See
+The fake provider's run calls the memory tools, which the published
+`ghcr.io/rxbynerd/stirrup:latest` harness carries. `just deploy`
+builds Billet from a sibling checkout at `BILLET_DIR` (default
+`../billet`) when there is one and pulls
+`ghcr.io/rxbynerd/billet:latest` otherwise. See
 [`docs/memory.md`](docs/memory.md#the-development-cluster).
 
 For a real cluster, apply [`examples/k8s/`](examples/k8s/) and supply

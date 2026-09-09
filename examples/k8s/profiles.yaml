@@ -70,12 +70,10 @@ data:
   # a real DNS name — see docs/deployment.md#deploying-haybale.
   #
   # network.mode "none" installs a deny-all NetworkPolicy for the
-  # sandbox Pod, so on any CNI that enforces NetworkPolicy (current kind
-  # releases included) the sandbox cannot reach haybale. Reaching it
-  # needs "allowlist" mode plus stirrup's egress-proxy Deployment
-  # (stirrup's examples/k8s/egress-proxy/) in the sandbox namespace with
-  # haybale's host:port in its allowlist; see
-  # examples/k8s/README.md#network-mode-a-known-gap-not-a-silent-one.
+  # sandbox Pod, which on an enforcing CNI cuts it off from haybale
+  # too, so this profile runs in "allowlist" mode through the egress
+  # proxy egress-proxy.yaml deploys, whose allowlist names haybale; see
+  # examples/k8s/README.md#network-mode-and-the-egress-proxy.
   git.json: |
     {
       "mode": "execution",
@@ -89,7 +87,8 @@ data:
       },
       "executor": {
         "type": "k8s",
-        "network": {"mode": "none"},
+        "network": {"mode": "allowlist", "allowlist": ["haybale.hairpin.svc:8466"]},
+        "k8sEgressProxyUrl": "http://stirrup-egress-proxy.hairpin-sandboxes.svc:8080",
         "sandboxIdentity": {
           "source": "control-plane",
           "audience": "https://haybale.hairpin.svc"

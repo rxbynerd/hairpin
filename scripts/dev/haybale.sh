@@ -9,8 +9,9 @@
 # consumes it, and re-running deploy.sh (which regenerates that pair)
 # means re-running this script too.
 #
-# haybale itself is a local, read-only reference checkout — this script
-# only builds a container image from it, never modifies it.
+# With a haybale checkout at HAYBALE_DIR this builds and pins a local
+# image; without one, examples/k8s/haybale.yaml's published image is
+# pulled.
 
 set -euo pipefail
 
@@ -43,18 +44,23 @@ KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
     || fail "cluster '${CLUSTER_NAME}' does not exist; run scripts/dev/kind-up.sh"
 "${KUBECTL[@]}" -n "${NAMESPACE}" get deployment hairpin >/dev/null 2>&1 \
     || fail "hairpin is not deployed in namespace '${NAMESPACE}'; run scripts/dev/deploy.sh first"
-[ -d "${HAYBALE_DIR}" ] \
-    || fail "no haybale checkout at ${HAYBALE_DIR}; set HAYBALE_DIR to override"
-
 archive="$(mktemp -t haybale-image-XXXXXX).tar"
 trap 'rm -f "${archive}"' EXIT
 
-log "building ${IMAGE} from ${HAYBALE_DIR}..."
-"${ENGINE}" build -t "${IMAGE}" "${HAYBALE_DIR}"
+# A local checkout is built and pinned; without one the manifest's
+# published image is pulled, the same choice deploy.sh makes for Billet.
+haybale_local=false
+if [ -f "${HAYBALE_DIR}/Containerfile" ]; then
+    log "building ${IMAGE} from ${HAYBALE_DIR}..."
+    "${ENGINE}" build -t "${IMAGE}" -f Containerfile "${HAYBALE_DIR}"
 
-log "loading ${IMAGE} into the cluster..."
-"${ENGINE}" save --format oci-archive -o "${archive}" "${IMAGE}"
-kind load image-archive "${archive}" --name "${CLUSTER_NAME}"
+    log "loading ${IMAGE} into the cluster..."
+    "${ENGINE}" save --format oci-archive -o "${archive}" "${IMAGE}"
+    kind load image-archive "${archive}" --name "${CLUSTER_NAME}"
+    haybale_local=true
+else
+    log "no haybale checkout at ${HAYBALE_DIR}; the published image will be pulled"
+fi
 
 log "deploying gitea..."
 "${KUBECTL[@]}" apply -f "${SCRIPT_DIR}/gitea.yaml"
@@ -127,12 +133,11 @@ log "recording the gitea token in the haybale-gitea-token Secret..."
     --from-literal=HAYBALE_GITEA_TOKEN="${token}" \
     --dry-run=client -o yaml | "${KUBECTL[@]}" apply -f -
 
-"${KUBECTL[@]}" -n "${NAMESPACE}" set image deployment/haybale "haybale=${IMAGE}"
-"${KUBECTL[@]}" -n "${NAMESPACE}" patch deployment haybale --type=json \
-    -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]' \
-    2>/dev/null \
-  || "${KUBECTL[@]}" -n "${NAMESPACE}" patch deployment haybale --type=json \
-    -p '[{"op":"add","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"IfNotPresent"}]'
+if [ "${haybale_local}" = true ]; then
+    "${KUBECTL[@]}" -n "${NAMESPACE}" set image deployment/haybale "haybale=${IMAGE}"
+    "${KUBECTL[@]}" -n "${NAMESPACE}" patch deployment haybale -p \
+        '{"spec":{"template":{"spec":{"containers":[{"name":"haybale","imagePullPolicy":"IfNotPresent"}]}}}}'
+fi
 "${KUBECTL[@]}" -n "${NAMESPACE}" rollout restart deployment/haybale
 "${KUBECTL[@]}" -n "${NAMESPACE}" rollout status deployment/haybale --timeout=180s
 
@@ -156,7 +161,8 @@ print(json.dumps({"data": {"git.json": json.dumps({
     "modelRouter": {"type": "static", "model": "fake-model"},
     "executor": {
         "type": "k8s",
-        "network": {"mode": "none"},
+        "network": {"mode": "allowlist", "allowlist": ["haybale.hairpin.svc:8466"]},
+        "k8sEgressProxyUrl": "http://stirrup-egress-proxy.hairpin-sandboxes.svc:8080",
         "sandboxIdentity": {"source": "control-plane", "audience": "https://haybale.hairpin.svc"},
         "gitProxy": {"url": "http://haybale.hairpin.svc:8466", "hosts": ["gitea"]},
     },

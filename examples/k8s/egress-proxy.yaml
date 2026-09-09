@@ -1,0 +1,100 @@
+# stirrup's egress allowlist proxy, deployed into the sandbox namespace
+# so a profile can use executor.network.mode "allowlist".
+#
+# In "allowlist" mode the harness installs a per-Pod NetworkPolicy that
+# admits egress only to DNS and to Pods labelled app=stirrup-egress-proxy
+# in the sandbox's own namespace, and injects HTTP_PROXY/HTTPS_PROXY
+# pointing at executor.k8sEgressProxyUrl. This proxy is therefore the
+# sandbox's only route anywhere, in-cluster services included: haybale
+# is reached through it, which is why haybale.hairpin.svc:8466 is in the
+# allowlist below. The proxy forwards plain HTTP as well as CONNECT.
+#
+# The allowlist is read once at startup; roll the Deployment after
+# changing it. An empty allowlist denies everything.
+#
+# Mirrors examples/k8s/egress-proxy/ in the stirrup repository, moved
+# into hairpin-sandboxes and keyed to hairpin's service names.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stirrup-egress-allowlist
+  namespace: hairpin-sandboxes
+  labels:
+    app: stirrup-egress-proxy
+data:
+  allowlist.txt: |
+    # haybale, the git-credential proxy (plain HTTP, explicit port).
+    haybale.hairpin.svc:8466
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stirrup-egress-proxy
+  namespace: hairpin-sandboxes
+  labels:
+    app: stirrup-egress-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stirrup-egress-proxy
+  template:
+    metadata:
+      labels:
+        app: stirrup-egress-proxy
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: egress-proxy
+          image: ghcr.io/rxbynerd/stirrup:latest
+          args:
+            - egress-proxy
+            - --listen
+            - ":8080"
+            - --allowlist-file
+            - /etc/stirrup/allowlist.txt
+            - --log-level
+            - info
+          ports:
+            - name: proxy
+              containerPort: 8080
+          volumeMounts:
+            - name: allowlist
+              mountPath: /etc/stirrup
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: allowlist
+          configMap:
+            name: stirrup-egress-allowlist
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stirrup-egress-proxy
+  namespace: hairpin-sandboxes
+  labels:
+    app: stirrup-egress-proxy
+spec:
+  selector:
+    app: stirrup-egress-proxy
+  ports:
+    - name: proxy
+      port: 8080
+      targetPort: proxy

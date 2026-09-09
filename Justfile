@@ -46,6 +46,11 @@ memory-smoke-test:
 openrouter op_ref="":
     ./scripts/dev/openrouter.sh {{op_ref}}
 
+# Wire an openai-compatible provider and its "<name>"/"<name>-git" profiles
+# into the cluster; the key comes from HAIRPIN_PROVIDER_API_KEY or op_ref.
+provider name base_url model op_ref="":
+    ./scripts/dev/provider.sh {{name}} {{base_url}} {{model}} {{op_ref}}
+
 # Build+load haybale, deploy an in-cluster gitea, and wire the "git" profile.
 haybale:
     ./scripts/dev/haybale.sh
@@ -53,6 +58,10 @@ haybale:
 # Submit a job through the "git" profile and assert the push landed in gitea.
 git-smoke-test:
     ./scripts/dev/git-smoke-test.sh
+
+# Add a GitHub App upstream to the deployed haybale (HAIRPIN_GITHUB_* env).
+haybale-github:
+    ./scripts/dev/haybale-github.sh
 
 # Destroy the kind development cluster.
 kind-down:
