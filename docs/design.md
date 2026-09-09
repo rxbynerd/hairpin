@@ -57,6 +57,12 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
    `cancelled` → `cancelled`, anything else → `failed` (reason
    preserved verbatim — stirrup adds stop reasons over time). Stream
    closure without `done` marks the job `failed` with a crash note.
+   That reading holds: on an orderly exit the harness half-closes and
+   waits up to two seconds for hairpin to end `RunTask` before
+   dropping the connection ([stirrup PR
+   #608](https://github.com/rxbynerd/stirrup/pull/608)), so a terminal
+   `done` or `error` is no longer lost to a teardown race and a
+   rejected RunConfig no longer arrives looking like a crashed pod.
 
 ## Components
 
