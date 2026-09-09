@@ -10,6 +10,7 @@ is tracked in GitHub rather than as a session log:
 - [Support safe multi-replica deployments](https://github.com/rxbynerd/hairpin/issues/4) by moving live control-event routing out of process.
 - Verify the sandbox path with each documented RuntimeClass; the local kind recipe currently exercises only the cluster-default runtime.
 - Make the per-job event cap configurable and signal truncation on the timeline API. Each store caps a job's timeline at 10000 events — exactly in memory, approximately in Redis (`XADD MAXLEN ~`) — with no flag reaching either, and `tool_call` roughly doubles a tool-heavy run's volume, so a long run now loses its early timeline silently.
+- Bound and observe the SSE stream handler's lifetime: write errors are discarded without a log at any level, the writer sets no per-write deadline, and `http.Server` sets no read, write, or idle timeouts, so a stalled client pins a handler goroutine and its Redis subscription past the request context's cancellation (`internal/web/sse.go`, `cmd/hairpin/serve.go`).
 - A sandbox in `allowlist` mode reaches nothing, in-cluster services included, except through the egress proxy, so any deployment running a git profile must deploy `examples/k8s/egress-proxy.yaml` and keep its allowlist current (see [`examples/k8s/README.md`](examples/k8s/README.md#network-mode-and-the-egress-proxy)). There is no server-side check that the proxy a profile names exists.
 - Run the sandbox token refresh end to end on the dev kind cluster: a `git` profile with `timeout: 1200` against the default 15-minute TTL, pushing after the first expiry, so a refreshed token is proved to reach the sandbox's credential helper. Needs a harness image carrying [stirrup PR #609](https://github.com/rxbynerd/stirrup/pull/609), which `ghcr.io/rxbynerd/stirrup:latest` picks up on the next green main build. Never exercised — every live run so far finished inside one token's lifetime ([`docs/e2e-live-diary.md`](docs/e2e-live-diary.md)).
 
@@ -17,7 +18,8 @@ is tracked in GitHub rather than as a session log:
 
 - [Reject unsupported RunConfig capabilities during submission](https://github.com/rxbynerd/hairpin/issues/1) instead of allowing a job to reach a protocol request Hairpin cannot answer.
 - Narrow `haybale-policy` from the `hp-*` ceiling to per-caller rules. `scripts/dev/haybale-github.sh` widens it further still, to every repository under one GitHub owner.
-- Correlate `tool_call.id` with `tool_result.tool_use_id` in the web UI's timeline and mark a call still open at `done` as orphaned. Hairpin records both events verbatim and joins nothing ([`docs/api.md`](docs/api.md#tool-calls-and-results)); today a reader pairs them by eye.
+- Correlate `tool_call.id` with `tool_result.tool_use_id` in the web UI's timeline and mark a call still open at `done` as orphaned. Hairpin records both events verbatim and joins nothing ([`docs/api.md`](docs/api.md#tool-calls-and-results)); today a reader pairs them by eye. Orphan marking must emit a new synthetic event from `eventPump` rather than mutate a stored payload, because `Last-Event-ID` resume depends on recorded events being immutable.
+- Add a regression test for a `tool_call` that reaches `done` with no matching `tool_result`, pinning that the job still settles normally before any per-id correlation lands.
 - Verify hairpin's retention and cancellation paths against a harness carrying [stirrup PR #608](https://github.com/rxbynerd/stirrup/pull/608): confirm jobs settle on their real `done.stop_reason` rather than the crash-inferred path when the harness closes cleanly.
 - Rotate the sandbox-token signing key without a haybale restart; haybale reads the JWKS file once at startup.
 - Add follow-up turns and batch execution only with end-to-end lifecycle and cancellation semantics. Asynchronous tool results are answered for the two memory tools only.
@@ -34,6 +36,7 @@ Memory ([`docs/memory.md`](docs/memory.md)) runs on published images. Both upstr
 ## Security and observability
 
 - [Add authentication, authorization, and transport security](https://github.com/rxbynerd/hairpin/issues/5) for the API, UI, and harness control plane.
+- Bound a sandbox identity token's life to its job: the JWTs are stateless and unrevocable, so one minted late in a run stays valid for its full TTL after the job settles. Clamp the TTL to the remaining run budget, or add a revocation check alongside rotating the signing key without a haybale restart.
 - Instrument the web UI's HTTP handlers, and the Redis and Kubernetes
   clients, so store and launcher latency is more than the enclosing
   span's duration. Service traces and metrics themselves are built
