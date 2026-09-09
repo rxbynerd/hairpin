@@ -154,20 +154,30 @@ type fakeIssuer struct {
 }
 
 type fakeMint struct {
-	sub   string
-	scope []string
+	sub     string
+	scope   []string
+	token   string
+	expires time.Time
 }
 
 func (f *fakeIssuer) Audience() string { return f.audience }
 
+// Mint hands back a distinct token and expiry per call, so a test can
+// tell a refreshed credential from the one issued before it.
 func (f *fakeIssuer) Mint(sub string, scope []string) (string, time.Time, error) {
 	f.mu.Lock()
-	f.minted = append(f.minted, fakeMint{sub: sub, scope: append([]string(nil), scope...)})
-	f.mu.Unlock()
+	defer f.mu.Unlock()
+	m := fakeMint{sub: sub, scope: append([]string(nil), scope...)}
+	if f.err == nil {
+		n := len(f.minted) + 1
+		m.token = fmt.Sprintf("signed.%s.%d", sub, n)
+		m.expires = time.Now().Add(15 * time.Minute).Add(time.Duration(n) * time.Second)
+	}
+	f.minted = append(f.minted, m)
 	if f.err != nil {
 		return "", time.Time{}, f.err
 	}
-	return "signed." + sub, time.Now().Add(15 * time.Minute), nil
+	return m.token, m.expires, nil
 }
 
 func seedJob(t *testing.T, st store.Store, id string, status job.Status, mutate func(*job.Job)) *job.Job {
@@ -514,7 +524,7 @@ func TestRunTaskIssuesSandboxToken(t *testing.T) {
 	if resp.GetRequestId() != "sbx-1" {
 		t.Errorf("request_id = %q, want sbx-1", resp.GetRequestId())
 	}
-	if resp.GetToken() != "signed.hp-sbx-ok" {
+	if resp.GetToken() != "signed.hp-sbx-ok.1" {
 		t.Errorf("token = %q", resp.GetToken())
 	}
 	if resp.GetExpiresAt() == 0 {
@@ -644,6 +654,58 @@ func TestRunTaskSandboxTokenEmptyScopeReachesIssuerEmpty(t *testing.T) {
 	}
 	if len(issuer.minted) != 1 || len(issuer.minted[0].scope) != 0 {
 		t.Fatalf("Mint calls = %+v, want one call with an empty scope", issuer.minted)
+	}
+}
+
+// The harness refreshes its sandbox token on the same stream, ahead of
+// each expires_at hairpin reports, up to the per-run cap. Every request
+// under the cap must mint afresh and report the new expiry: a response
+// without expires_at tells the harness the token outlives the run, so
+// it schedules no further refresh and the sandbox loses its credential
+// mid-run.
+func TestRunTaskSandboxTokenRefreshesOnTheSameStream(t *testing.T) {
+	issuer := &fakeIssuer{audience: "https://haybale.internal"}
+	h, st, _ := testHandlerWithIssuer(t, issuer)
+	seedJob(t, st, "hp-sbx-refresh", job.StatusAwaitingHarness, withSandboxIdentity)
+
+	evs := []*harnessv1.HarnessEvent{ready("hp-sbx-refresh")}
+	for i := 1; i <= maxSandboxTokenRequests; i++ {
+		evs = append(evs, &harnessv1.HarnessEvent{Type: evSandboxTokenRequest, RequestId: fmt.Sprintf("sbx-%d", i)})
+	}
+	evs = append(evs, &harnessv1.HarnessEvent{Type: evDone, StopReason: "success"})
+	s := newFakeStream(evs...)
+	if err := h.runTask(context.Background(), s); err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+
+	if len(issuer.minted) != maxSandboxTokenRequests {
+		t.Fatalf("Mint calls = %d, want %d: every request under the cap mints afresh", len(issuer.minted), maxSandboxTokenRequests)
+	}
+	ctls := s.controls()
+	if want := 1 + maxSandboxTokenRequests; len(ctls) != want {
+		t.Fatalf("controls = %v, want the assignment and %d responses", s.types(), maxSandboxTokenRequests)
+	}
+
+	seen := make(map[string]bool, maxSandboxTokenRequests)
+	for i, resp := range ctls[1:] {
+		mint := issuer.minted[i]
+		which := fmt.Sprintf("request %d", i+1)
+		if resp.GetIsError().GetValue() {
+			t.Fatalf("%s refused under the cap: reason=%q", which, resp.GetReason())
+		}
+		if got, want := resp.GetRequestId(), fmt.Sprintf("sbx-%d", i+1); got != want {
+			t.Errorf("%s request_id = %q, want %q", which, got, want)
+		}
+		if resp.GetToken() != mint.token {
+			t.Errorf("%s token = %q, want the freshly minted %q", which, resp.GetToken(), mint.token)
+		}
+		if seen[resp.GetToken()] {
+			t.Errorf("%s reused a token already handed out: %q", which, resp.GetToken())
+		}
+		seen[resp.GetToken()] = true
+		if resp.GetExpiresAt() != mint.expires.Unix() {
+			t.Errorf("%s expires_at = %d, want the minted expiry %d", which, resp.GetExpiresAt(), mint.expires.Unix())
+		}
 	}
 }
 

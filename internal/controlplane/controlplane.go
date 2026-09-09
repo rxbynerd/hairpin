@@ -70,9 +70,11 @@ const (
 )
 
 // maxSandboxTokenRequests bounds the tokens one harness stream may
-// mint. The harness fetches exactly one before creating its sandbox;
-// every request past the cap is refused so a looping harness cannot
-// keep a pump busy signing credentials.
+// mint. The harness fetches one before creating its sandbox and
+// refreshes it at 80% of each reported expires_at, so a long run
+// legitimately asks several times; the cap matches the harness's own
+// per-run limit. Every request past it is refused, which the harness
+// reports as a warning and keeps running on its current token.
 const maxSandboxTokenRequests = 8
 
 // Refusals for a tool_result_request hairpin will not answer. Each is
