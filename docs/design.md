@@ -42,7 +42,10 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
 3. The harness opens the `RunTask` stream and sends `ready`. Hairpin
    correlates via `ready.id`, sends `task_assignment` with the stored
    RunConfig (`running`), and pumps every harness event into a Redis
-   stream. Heartbeats update a liveness timestamp.
+   stream. Heartbeats update a liveness timestamp. `tool_call` and
+   `tool_result` are recorded verbatim and never correlated with each
+   other; the join on `tool_call.id` belongs to whoever reads the
+   timeline ([`docs/api.md`](api.md#tool-calls-and-results)).
 4. `permission_request` events are persisted as pending approvals;
    `AnswerPermission` (API or UI button) routes the decision onto the
    live stream via the in-process session registry.
@@ -87,7 +90,7 @@ dials.
 | Key | Type | Contents |
 |---|---|---|
 | `hairpin:job:<id>` | hash | job fields (status, prompt, runconfig JSON, repo_scope, stop reason, timestamps, last_event_at) |
-| `hairpin:job:<id>:events` | stream | harness events (protojson payloads), XADD with MAXLEN ~10000 |
+| `hairpin:job:<id>:events` | stream | harness events (protojson payloads), XADD with MAXLEN ~10000. A tool-heavy run records two entries per tool call, so it reaches the trim point about twice as fast as text-only work. |
 | `hairpin:job:<id>:perms` | hash | pending/answered permission requests keyed by request_id |
 | `hairpin:jobs` | zset | job IDs scored by creation time (listing, newest first) |
 

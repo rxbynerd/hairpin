@@ -248,8 +248,8 @@ hairpin synthesises itself:
 | `type` | Origin | Notes |
 |---|---|---|
 | `text_delta` | harness | Incremental model output text. Hairpin coalesces consecutive deltas before persisting them, so the recorded timeline has fewer, larger fragments than the raw harness stream. |
-| `tool_call` | harness | `id`, `name`, `input`. In `payloadJson`, protobuf encodes the `bytes` input as base64; decoding it yields the JSON tool arguments. |
-| `tool_result` | harness | `tool_use_id`, `content`. |
+| `tool_call` | harness | `id`, `name`, `input`. In `payloadJson`, protobuf encodes the `bytes` input as base64; decoding it yields the JSON tool arguments. See [Tool calls and results](#tool-calls-and-results). |
+| `tool_result` | harness | `tool_use_id`, `content`. `tool_use_id` is the `id` of the `tool_call` this result answers. |
 | `permission_request` | harness | `request_id`, `tool_name`, base64-encoded `input`. Also recorded in the permissions store with decoded JSON as `inputJson` — see [`ListPermissionRequests`](#listpermissionrequests). |
 | `heartbeat` | harness | No payload; liveness only. Sent every 30s during execution. |
 | `warning` | harness | `message`; non-fatal. |
@@ -265,6 +265,36 @@ hairpin synthesises itself:
 
 Unknown harness event types are recorded verbatim rather than dropped,
 so a timeline never silently loses events stirrup adds in the future.
+
+## Tool calls and results
+
+The harness emits a `tool_call` for every tool the model invokes
+([stirrup PR #603](https://github.com/rxbynerd/stirrup/pull/603)), and
+a `tool_result` carrying the same identifier when the call returns.
+Hairpin records both verbatim and correlates nothing; a consumer that
+wants a call joined to its result does the join itself, on
+`tool_call.id` and `tool_result.tool_use_id`.
+
+Four properties of `tool_call` shape what a consumer may assume:
+
+- **`name` is the presented name, not the internal tool ID.** It is
+  the alias the model used, which a non-default toolset profile can
+  make differ from the `tool_name` on a `permission_request` for the
+  same tool. Matching a `tool_call` to a permission decision by name
+  is therefore unsound.
+- **`input` is untrusted.** It is raw model output, scrubbed of
+  secrets and nothing else — not schema-validated, guardrail-checked,
+  or stripped of prototype-pollution keys, the way
+  `permission_request.input` is. Render and store it as opaque data.
+- **A `tool_call` need not have a `tool_result`.** A cancelled,
+  stream-faulted, stalled, or `max_tokens`-truncated turn orphans the
+  call. `done` is the terminal close for any per-`id` state a consumer
+  keeps; anything still pending at that point will stay pending.
+- **Event volume roughly doubles on tool-heavy runs**, since each call
+  now records two entries rather than one. A timeline is capped at
+  `MAXLEN ~10000` entries per job, so a long tool-heavy run reaches
+  the trim point about twice as fast — see
+  [`docs/design.md`](design.md#redis-layout).
 
 ## Permission flow
 
