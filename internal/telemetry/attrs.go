@@ -118,6 +118,8 @@ var knownStopReasons = map[string]struct{}{
 var knownEventTypes = map[string]struct{}{
 	"ready":                  {},
 	"text_delta":             {},
+	"tool_call":              {},
+	"tool_result":            {},
 	"heartbeat":              {},
 	"permission_request":     {},
 	"error":                  {},

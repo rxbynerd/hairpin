@@ -196,6 +196,45 @@ func TestHarnessSuppliedLabelsAreBounded(t *testing.T) {
 	}
 }
 
+// Every event type the harness stream carries keeps its own series.
+// A type missing from the vocabulary collapses into "other", which
+// hides it from the per-type breakdown.
+func TestKnownHarnessEventTypesKeepTheirLabel(t *testing.T) {
+	types := []string{
+		"ready",
+		"text_delta",
+		"tool_call",
+		"tool_result",
+		"heartbeat",
+		"permission_request",
+		"error",
+		"warning",
+		"done",
+		"sandbox_token_request",
+		"batch_submission",
+		"tool_result_request",
+		"tool_result_response",
+		"sandbox_token_response",
+	}
+
+	rec, collector := telemetrytest.New(t)
+	ctx := context.Background()
+	for _, typ := range types {
+		rec.HarnessEvent(ctx, typ)
+	}
+
+	for _, typ := range types {
+		if got := collector.Sum(t, "hairpin.harness.events",
+			attribute.String("hairpin.harness.event.type", typ)); got != 1 {
+			t.Errorf("%s events = %d, want 1", typ, got)
+		}
+	}
+	if got := collector.Sum(t, "hairpin.harness.events",
+		attribute.String("hairpin.harness.event.type", "other")); got != 0 {
+		t.Errorf("events bucketed as other = %d, want 0", got)
+	}
+}
+
 func TestTraceParentLinksLaterSpans(t *testing.T) {
 	rec, collector := telemetrytest.New(t)
 
