@@ -339,8 +339,8 @@ values — it only tells Kubernetes which Secrets to mount.
 ### Sandbox identity tokens
 
 A RunConfig's `executor.sandbox_identity` asks the harness to fetch a
-short-lived credential for the sandbox before it starts, then inject
-it into the sandbox environment (`HAYBALE_TOKEN` by default) for
+short-lived credential for the sandbox before it starts, then deliver
+it into the sandbox for
 [haybale](https://github.com/rxbynerd/haybale), an authenticating
 reverse proxy for Git smart HTTP: the sandbox authenticates to haybale
 with this token, haybale checks a default-deny repo policy and swaps
@@ -360,12 +360,43 @@ an opted-in run config fails fast instead of waiting out the harness's
 | `-sandbox-token-key` | Path to an ES256 (P-256) private key PEM. Empty (the default) disables issuance entirely. |
 | `-sandbox-token-issuer` | The token's `iss` claim. Required when `-sandbox-token-key` is set. |
 | `-sandbox-token-audience` | The token's `aud` claim — must match what haybale's `issuer.audience` config expects. Required when `-sandbox-token-key` is set. The harness's own requested audience (`executor.sandbox_identity.audience`) is informational only; this flag's value always wins, and a mismatch is logged, not honoured. |
-| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less. hairpin warns at startup above an hour, since a leaked token stays valid for the whole window. |
+| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less, and the harness refreshes ahead of expiry rather than needing a token that outlives the run. hairpin warns at startup above an hour, since a leaked token stays valid for the whole window. |
 
 Setting `-sandbox-token-issuer` or `-sandbox-token-audience` without
 `-sandbox-token-key` is rejected at startup rather than accepted as a
 no-op, so a deployment cannot look configured for issuance while
 refusing every request.
+
+**A run asks more than once.** The harness re-requests the token on
+the same stream once 80% of its remaining lifetime has elapsed, with
+up to 5% jitter so runs whose tokens were minted together do not
+refresh in lockstep ([stirrup PR
+#609](https://github.com/rxbynerd/stirrup/pull/609)). A 15-minute
+token is refreshed after about twelve. The schedule is driven by the
+`expires_at` hairpin sets on every `sandbox_token_response`, so it is
+always in effect. A run sends at most eight `sandbox_token_request`s
+in total, the first exchange plus up to seven refreshes; hairpin's own
+per-stream cap is the same eight, and at a 15-minute TTL that budget
+outlasts the longest run stirrup permits. Every request past the cap
+is refused with an `is_error` response.
+
+A refusal or a failed refresh does not end the run. The harness stops
+refreshing, emits a `warning` event naming the expiry, and carries on
+with the token it already holds until that token expires — after
+which git through haybale starts failing on its own. Treat those
+warnings on a job's timeline as the signal that issuance is
+misconfigured, not as the failure itself.
+
+The token reaches the sandbox two ways, and only one of them tracks a
+refresh: an environment variable (`HAYBALE_TOKEN` by default) holding
+the token as issued at sandbox creation and never updated, and a
+`0600` file at `/run/stirrup/sandbox-identity/token` on a private
+memory-backed mount, which every refresh rewrites in place. The git
+credential helper reads the file. Both are hairpin-independent —
+delivery is entirely the harness's side of the contract — but the
+distinction matters when reading a run that failed after its first
+refresh, since anything in the sandbox still consulting the
+environment variable is using an expired credential.
 
 Every mint writes one `Info` line naming the job, the request id, the
 audience, the expiry, and the granted scope. haybale logs the same job

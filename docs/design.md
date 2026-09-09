@@ -149,7 +149,9 @@ trusted operators.
 - `sandbox_token_request` is answered with a signed sandbox identity
   token only when `-sandbox-token-key` is configured (see
   [`docs/deployment.md`](deployment.md#sandbox-identity-tokens));
-  otherwise it receives an explicit `is_error` refusal.
+  otherwise it receives an explicit `is_error` refusal. A run asks
+  repeatedly, refreshing ahead of expiry, up to eight times per
+  stream.
 - Asynchronous tool results are answered only for the two memory
   tools; `SubmitJob` rejects a `tools.controlPlane` entry naming
   anything else. Batch requests are recorded but not answered, and a
