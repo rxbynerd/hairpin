@@ -1124,7 +1124,7 @@ func TestRunTaskRecordsToolCallAndResultInOrder(t *testing.T) {
 		t.Fatalf("recorded tool events = %q, want a tool_call then a tool_result", got)
 	}
 	// Input is a bytes field, so protojson carries it base64-encoded.
-	if !strings.Contains(got[0], `"run_command"`) || !strings.Contains(got[0], base64.StdEncoding.EncodeToString([]byte(`{"command":"ls"}`))) {
+	if !strings.Contains(got[0], `"name":"run_command"`) || !strings.Contains(got[0], base64.StdEncoding.EncodeToString([]byte(`{"command":"ls"}`))) {
 		t.Errorf("tool_call payload lost its input: %s", got[0])
 	}
 	// tool_call carries the model's id; tool_result correlates to it
