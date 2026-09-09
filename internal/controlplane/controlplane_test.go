@@ -1043,7 +1043,7 @@ func TestRunTaskRecordsToolCallAndResultInOrder(t *testing.T) {
 
 	s := newFakeStream(
 		ready("hp-tools"),
-		&harnessv1.HarnessEvent{Type: evToolCall, ToolUseId: "tu-1", ToolName: "run_command", Input: []byte(`{"command":"ls"}`)},
+		&harnessv1.HarnessEvent{Type: evToolCall, Id: "tu-1", Name: "run_command", Input: []byte(`{"command":"ls"}`)},
 		&harnessv1.HarnessEvent{Type: evToolResult, ToolUseId: "tu-1", Content: "README.md"},
 		&harnessv1.HarnessEvent{Type: evDone, StopReason: "success"},
 	)
@@ -1064,6 +1064,15 @@ func TestRunTaskRecordsToolCallAndResultInOrder(t *testing.T) {
 	// Input is a bytes field, so protojson carries it base64-encoded.
 	if !strings.Contains(got[0], `"run_command"`) || !strings.Contains(got[0], base64.StdEncoding.EncodeToString([]byte(`{"command":"ls"}`))) {
 		t.Errorf("tool_call payload lost its input: %s", got[0])
+	}
+	// tool_call carries the model's id; tool_result correlates to it
+	// through tool_use_id. Both must survive verbatim for a consumer
+	// to pair them up.
+	if !strings.Contains(got[0], `"id":"tu-1"`) {
+		t.Errorf("tool_call payload lost its id: %s", got[0])
+	}
+	if !strings.Contains(got[1], `"toolUseId":"tu-1"`) {
+		t.Errorf("tool_result payload lost its tool_use_id: %s", got[1])
 	}
 	if !strings.Contains(got[1], "README.md") {
 		t.Errorf("tool_result payload lost its content: %s", got[1])
