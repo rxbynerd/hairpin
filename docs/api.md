@@ -222,10 +222,10 @@ Every RPC maps internal errors onto connect codes (`internal/api/api.go`):
 |---|---|
 | `JOB_STATUS_QUEUED` | Accepted and persisted; launcher not yet invoked. |
 | `JOB_STATUS_LAUNCHING` | Launcher invoked; the harness Job is being created. |
-| `JOB_STATUS_AWAITING_HARNESS` | Harness started but has not yet dialled back in with `ready`. |
+| `JOB_STATUS_AWAITING_HARNESS` | Harness started but has not yet dialled back in with `ready`. The reaper fails a job that never dials back — see [Job retention](deployment.md#job-retention). |
 | `JOB_STATUS_RUNNING` | `task_assignment` sent; the harness is executing. |
 | `JOB_STATUS_SUCCEEDED` | Terminal. `done.stop_reason` was `"success"`. |
-| `JOB_STATUS_FAILED` | Terminal. Any non-success, non-cancelled outcome — including launch errors and a stream that closed without a `done` event. See `Job.stop_reason` and `Job.error`. |
+| `JOB_STATUS_FAILED` | Terminal. Any non-success, non-cancelled outcome — including launch errors and a stream that closed without a `done` event. See `Job.stop_reason` and `Job.error`. A stream that closes without `done` still means a crashed or killed harness: an orderly exit half-closes and waits up to two seconds for hairpin to end `RunTask` first ([stirrup PR #608](https://github.com/rxbynerd/stirrup/pull/608)), so a terminal event is not lost to teardown and a rejected RunConfig does not present as a crash. The wait is best-effort, not a delivery guarantee, and it does not apply when the harness takes a signal. |
 | `JOB_STATUS_CANCELLED` | Terminal. Cancelled via `CancelJob` (`stop_reason: "cancelled"`, or cancelled before assignment). |
 
 `stop_reason` carries stirrup's `done.stop_reason` verbatim. For
@@ -248,14 +248,14 @@ hairpin synthesises itself:
 | `type` | Origin | Notes |
 |---|---|---|
 | `text_delta` | harness | Incremental model output text. Hairpin coalesces consecutive deltas before persisting them, so the recorded timeline has fewer, larger fragments than the raw harness stream. |
-| `tool_call` | harness | `id`, `name`, `input`. In `payloadJson`, protobuf encodes the `bytes` input as base64; decoding it yields the JSON tool arguments. |
-| `tool_result` | harness | `tool_use_id`, `content`. |
+| `tool_call` | harness | `id`, `name`, `input`. In `payloadJson`, protobuf encodes the `bytes` input as base64; decoding it yields the JSON tool arguments. See [Tool calls and results](#tool-calls-and-results). |
+| `tool_result` | harness | `tool_use_id`, `content`. `tool_use_id` is the `id` of the `tool_call` this result answers. |
 | `permission_request` | harness | `request_id`, `tool_name`, base64-encoded `input`. Also recorded in the permissions store with decoded JSON as `inputJson` — see [`ListPermissionRequests`](#listpermissionrequests). |
 | `heartbeat` | harness | No payload; liveness only. Sent every 30s during execution. |
 | `warning` | harness | `message`; non-fatal. |
 | `error` | harness | `message`. The normal failure path follows it with `done` carrying `stop_reason: "error"`; transport loss can still end the stream first. |
 | `done` | harness | `stop_reason`, and `trace` when the harness populated it. Always the last harness-originated event of a run. |
-| `sandbox_token_request` | harness | Recorded, then answered with a signed sandbox identity token when `-sandbox-token-key` is configured, otherwise an explicit `is_error` refusal — see [Sandbox identity tokens](deployment.md#sandbox-identity-tokens). Issuance is also refused when the job's stored RunConfig declares no `executor.sandbox_identity`, and once a run has exhausted its request cap; the declaration check is a consistency guard, not an authorization boundary, since the submitter supplies the config. |
+| `sandbox_token_request` | harness | Recorded, then answered with a signed sandbox identity token when `-sandbox-token-key` is configured, otherwise an explicit `is_error` refusal — see [Sandbox identity tokens](deployment.md#sandbox-identity-tokens). Issuance is also refused when the job's stored RunConfig declares no `executor.sandbox_identity`, and once a run has exhausted its request cap; the declaration check is a consistency guard, not an authorization boundary, since the submitter supplies the config. A run sends up to eight of these — the first before the sandbox exists, the rest as refreshes at 80% of the token's remaining lifetime — so several on one timeline is the normal case, not a loop. |
 | `sandbox_token_response` | hairpin | Not recorded. The answer to a `sandbox_token_request` carries the minted token, which never reaches the timeline, a log line, or the store. |
 | `tool_result_request` | harness | `request_id`, `tool_use_id`, `tool_name`, base64-encoded `input`. A call to a control-plane tool. Hairpin answers `search_memory` and `save_memory` calls the run declared by proxying them to Billet, and refuses anything else — see [`docs/memory.md`](memory.md). |
 | `tool_result_response` | hairpin | `request_id`, `content`, `is_error`. The `ControlEvent` hairpin sent in answer to a `tool_result_request`, recorded whether or not delivery to the harness succeeded. |
@@ -265,6 +265,36 @@ hairpin synthesises itself:
 
 Unknown harness event types are recorded verbatim rather than dropped,
 so a timeline never silently loses events stirrup adds in the future.
+
+## Tool calls and results
+
+The harness emits a `tool_call` for every tool the model invokes
+([stirrup PR #603](https://github.com/rxbynerd/stirrup/pull/603)), and
+a `tool_result` carrying the same identifier when the call returns.
+Hairpin records both verbatim and correlates nothing; a consumer that
+wants a call joined to its result does the join itself, on
+`tool_call.id` and `tool_result.tool_use_id`.
+
+Four properties of `tool_call` shape what a consumer may assume:
+
+- **`name` is the presented name, not the internal tool ID.** It is
+  the alias the model used, which a non-default toolset profile can
+  make differ from the `tool_name` on a `permission_request` for the
+  same tool. Matching a `tool_call` to a permission decision by name
+  is therefore unsound.
+- **`input` is untrusted.** It is raw model output, scrubbed of
+  secrets and nothing else — not schema-validated, guardrail-checked,
+  or stripped of prototype-pollution keys, the way
+  `permission_request.input` is. Render and store it as opaque data.
+- **A `tool_call` need not have a `tool_result`.** A cancelled,
+  stream-faulted, stalled, or `max_tokens`-truncated turn orphans the
+  call. `done` is the terminal close for any per-`id` state a consumer
+  keeps; anything still pending at that point will stay pending.
+- **Event volume roughly doubles on tool-heavy runs**, since each call
+  now records two entries rather than one. A timeline is capped at
+  `MAXLEN ~10000` entries per job, so a long tool-heavy run reaches
+  the trim point about twice as fast — see
+  [`docs/design.md`](design.md#redis-layout).
 
 ## Permission flow
 

@@ -209,11 +209,14 @@ haybale. Runs then submit with
 Both ConfigMaps are replaced wholesale, so re-run this after
 `haybale.sh` re-applies the manifest.
 
-`git-smoke-test` needs a harness image built from stirrup's
-`fix/lowercase-proxy-env` branch until that change is published: a
-clone through the egress proxy otherwise hangs on the proxy
-environment variables' spelling — see [Sandbox
-egress](#sandbox-egress-and-the-allowlist-proxy).
+`git-smoke-test` needs a harness image carrying [stirrup PR
+#592](https://github.com/rxbynerd/stirrup/pull/592), without which a
+clone through the egress proxy hangs on the proxy environment
+variables' spelling. A `ghcr.io/rxbynerd/stirrup:latest` built from a
+stirrup main commit that descends from #592's merge has it; confirm
+with the revision check in [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy) before assuming a
+given `:latest` picked it up.
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
@@ -339,8 +342,8 @@ values — it only tells Kubernetes which Secrets to mount.
 ### Sandbox identity tokens
 
 A RunConfig's `executor.sandbox_identity` asks the harness to fetch a
-short-lived credential for the sandbox before it starts, then inject
-it into the sandbox environment (`HAYBALE_TOKEN` by default) for
+short-lived credential for the sandbox before it starts, then deliver
+it into the sandbox for
 [haybale](https://github.com/rxbynerd/haybale), an authenticating
 reverse proxy for Git smart HTTP: the sandbox authenticates to haybale
 with this token, haybale checks a default-deny repo policy and swaps
@@ -360,12 +363,45 @@ an opted-in run config fails fast instead of waiting out the harness's
 | `-sandbox-token-key` | Path to an ES256 (P-256) private key PEM. Empty (the default) disables issuance entirely. |
 | `-sandbox-token-issuer` | The token's `iss` claim. Required when `-sandbox-token-key` is set. |
 | `-sandbox-token-audience` | The token's `aud` claim — must match what haybale's `issuer.audience` config expects. Required when `-sandbox-token-key` is set. The harness's own requested audience (`executor.sandbox_identity.audience`) is informational only; this flag's value always wins, and a mismatch is logged, not honoured. |
-| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less. hairpin warns at startup above an hour, since a leaked token stays valid for the whole window. |
+| `-sandbox-token-ttl` | How long a minted token is valid (default `15m`). Keep this short — haybale requires `exp` and recommends 15 minutes or less, and the harness refreshes ahead of expiry rather than needing a token that outlives the run. hairpin warns at startup above an hour, since a leaked token stays valid for the whole window. |
 
 Setting `-sandbox-token-issuer` or `-sandbox-token-audience` without
 `-sandbox-token-key` is rejected at startup rather than accepted as a
 no-op, so a deployment cannot look configured for issuance while
 refusing every request.
+
+**A run asks more than once.** The harness re-requests the token on
+the same stream once 80% of its remaining lifetime has elapsed, with
+up to 5% jitter so runs whose tokens were minted together do not
+refresh in lockstep ([stirrup PR
+#609](https://github.com/rxbynerd/stirrup/pull/609)). A 15-minute
+token is refreshed after about twelve. The schedule is driven by the
+`expires_at` hairpin sets on every `sandbox_token_response`, so it is
+always in effect. A run sends at most eight `sandbox_token_request`s
+in total, the first exchange plus up to seven refreshes; hairpin's own
+per-stream cap is the same eight. stirrup caps a run's `timeout` at
+3600 seconds (`proto/harness/v1/harness.proto`), so at a 15-minute TTL
+the eight-request budget covers roughly 99 minutes and outlasts any
+permitted run. Every request past the cap is refused with an
+`is_error` response.
+
+A refusal or a failed refresh does not end the run. The harness stops
+refreshing, emits a `warning` event naming the expiry, and carries on
+with the token it already holds until that token expires — after
+which git through haybale starts failing on its own. Treat those
+warnings on a job's timeline as the signal that issuance is
+misconfigured, not as the failure itself.
+
+The token reaches the sandbox two ways, and only one of them tracks a
+refresh: an environment variable (`HAYBALE_TOKEN` by default) holding
+the token as issued at sandbox creation and never updated, and a
+`0600` file at `/run/stirrup/sandbox-identity/token` on a private
+memory-backed mount, which every refresh rewrites in place. The git
+credential helper reads the file. Both are hairpin-independent —
+delivery is entirely the harness's side of the contract — but the
+distinction matters when reading a run that failed after its first
+refresh, since anything in the sandbox still consulting the
+environment variable is using an expired credential.
 
 Every mint writes one `Info` line naming the job, the request id, the
 audience, the expiry, and the granted scope. haybale logs the same job
@@ -467,13 +503,31 @@ the proxy's address is a profile-level decision, not a server flag.
 with the proxy URL above, as do the profiles `scripts/dev/haybale.sh`
 and `scripts/dev/provider.sh` generate.
 
-One upstream caveat applies to git specifically: stirrup's executors
-inject only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`,
-while git (through libcurl) honours only lowercase `http_proxy` for
-plain-http URLs. Git through a plain-HTTP haybale therefore hangs until
-stirrup ships the lowercase variants (branch
-`fix/lowercase-proxy-env`); until then the harness image must be built
-from that branch.
+Git needs a recent harness image here. stirrup's executors once
+injected only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and
+`NO_PROXY`, while git (through libcurl) honours only lowercase
+`http_proxy` for plain-http URLs, so a clone through a plain-HTTP
+haybale hung until the tool timeout. [stirrup PR
+#592](https://github.com/rxbynerd/stirrup/pull/592) added the
+lowercase names and merged on 2026-09-09; an image built from a
+stirrup main commit that descends from that merge carries it, and no
+branch build or `--harness-image` override is needed any more.
+
+A build date does not settle it. Other commits landed on main minutes
+before #592 did that morning, and stirrup republishes `:latest` from
+each main commit whose CI passes, so `:latest` lags main whenever main
+is red. Read the revision an image was built from:
+
+```sh
+podman image inspect ghcr.io/rxbynerd/stirrup:latest \
+  --format '{{index .Labels "org.opencontainers.image.revision"}}'
+```
+
+That revision carries the fix when it descends from #592's merge
+(`git -C <stirrup checkout> merge-base --is-ancestor <#592 merge
+commit> <revision>`). Otherwise pin the Deployment's
+`-harness-image` to the `sha-<short>` tag of a commit known to carry
+it.
 
 ### Deploying haybale
 

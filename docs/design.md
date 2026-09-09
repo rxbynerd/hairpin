@@ -42,7 +42,10 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
 3. The harness opens the `RunTask` stream and sends `ready`. Hairpin
    correlates via `ready.id`, sends `task_assignment` with the stored
    RunConfig (`running`), and pumps every harness event into a Redis
-   stream. Heartbeats update a liveness timestamp.
+   stream. Heartbeats update a liveness timestamp. `tool_call` and
+   `tool_result` are recorded verbatim and never correlated with each
+   other; the join on `tool_call.id` belongs to whoever reads the
+   timeline ([`docs/api.md`](api.md#tool-calls-and-results)).
 4. `permission_request` events are persisted as pending approvals;
    `AnswerPermission` (API or UI button) routes the decision onto the
    live stream via the in-process session registry.
@@ -54,6 +57,15 @@ harness ──tool_result_request──▶ hairpin ──SearchMemory / SaveMemo
    `cancelled` → `cancelled`, anything else → `failed` (reason
    preserved verbatim — stirrup adds stop reasons over time). Stream
    closure without `done` marks the job `failed` with a crash note.
+   That reading holds: on an orderly exit the harness half-closes and
+   waits up to two seconds for hairpin to end `RunTask` before
+   dropping the connection ([stirrup PR
+   #608](https://github.com/rxbynerd/stirrup/pull/608)), so a terminal
+   `done` or `error` is no longer lost to a teardown race and a
+   rejected RunConfig no longer arrives looking like a crashed pod.
+   The wait is best-effort rather than a delivery guarantee, and it
+   does not apply when the harness takes a signal
+   ([`docs/api.md`](api.md#job-lifecycle)).
 
 ## Components
 
@@ -87,7 +99,7 @@ dials.
 | Key | Type | Contents |
 |---|---|---|
 | `hairpin:job:<id>` | hash | job fields (status, prompt, runconfig JSON, repo_scope, stop reason, timestamps, last_event_at) |
-| `hairpin:job:<id>:events` | stream | harness events (protojson payloads), XADD with MAXLEN ~10000 |
+| `hairpin:job:<id>:events` | stream | harness events (protojson payloads), XADD with MAXLEN ~10000. A tool-heavy run records two entries per tool call, so it reaches the trim point about twice as fast as text-only work. |
 | `hairpin:job:<id>:perms` | hash | pending/answered permission requests keyed by request_id |
 | `hairpin:jobs` | zset | job IDs scored by creation time (listing, newest first) |
 
@@ -146,7 +158,9 @@ trusted operators.
 - `sandbox_token_request` is answered with a signed sandbox identity
   token only when `-sandbox-token-key` is configured (see
   [`docs/deployment.md`](deployment.md#sandbox-identity-tokens));
-  otherwise it receives an explicit `is_error` refusal.
+  otherwise it receives an explicit `is_error` refusal. A run asks
+  repeatedly, refreshing ahead of expiry, up to eight times per
+  stream.
 - Asynchronous tool results are answered only for the two memory
   tools; `SubmitJob` rejects a `tools.controlPlane` entry naming
   anything else. Batch requests are recorded but not answered, and a

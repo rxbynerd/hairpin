@@ -328,3 +328,51 @@ scripts (`run.sh`, `perm_test.py`, `parallel_test.py`) were in the
 session scratchpad, not the repo; the job IDs in this diary can be
 replayed from Redis through `GetJob` and `/jobs/{id}/events` while the
 cluster lives, and every harness Job's Pod log is still on the node.
+
+## 2026-09-09: upstream follow-ups
+
+Not a run. Recording which of the quirks above stirrup has since
+fixed, so a later reader does not chase a resolved issue.
+
+Fixed upstream, all merged on 2026-09-09:
+
+- The proxy environment variables' spelling is
+  [stirrup PR #592](https://github.com/rxbynerd/stirrup/pull/592).
+  The `--harness-image=localhost/stirrup:proxy-env` patch and the
+  worktree at `~/Developer/stirrup-proxyfix` are no longer needed.
+- The missing `tool_call` events ([stirrup
+  #593](https://github.com/rxbynerd/stirrup/issues/593)) are
+  [stirrup PR #603](https://github.com/rxbynerd/stirrup/pull/603).
+  A timeline now holds a call's inputs beside its result; neither is
+  correlated by hairpin
+  ([`docs/api.md`](api.md#tool-calls-and-results)).
+- The token expiring inside the run's budget ([stirrup
+  #594](https://github.com/rxbynerd/stirrup/issues/594)) is
+  [stirrup PR #609](https://github.com/rxbynerd/stirrup/pull/609).
+  The harness refreshes ahead of expiry, so a 15-minute TTL now
+  covers a run of any permitted length — stirrup caps `timeout` at
+  3600 seconds, and eight requests at a twelve-minute cadence reach
+  well past the hour.
+- The `codescanner` template-literal warnings ([stirrup
+  #595](https://github.com/rxbynerd/stirrup/issues/595)) are
+  [stirrup PR #597](https://github.com/rxbynerd/stirrup/pull/597),
+  which scopes the `sink/*` rules by file type and shebang.
+- A terminal `done` lost when the harness closed the connection is
+  [stirrup PR #608](https://github.com/rxbynerd/stirrup/pull/608).
+  Stream closure without `done` still means a crashed or killed
+  harness, but a rejected RunConfig no longer looks like one.
+
+Still open:
+
+- The tool guard's unconditional word ban on `curl`, `wget`, `nc`,
+  `netcat`, `ncat`, and `socat`, and on `` ` `` and `$(`, which
+  rejects a `run_command` naming any of them even to ask whether it
+  exists. `security.GuardToolCall` still runs on every command.
+- qwen's `\n\n` content beside each tool call, which `final_text`
+  accumulates into dozens of blank lines before the real answer.
+
+Informational: [stirrup PR
+#597](https://github.com/rxbynerd/stirrup/pull/597) renamed the rule
+IDs `sink/python_eval` and `sink/python_exec` to `sink/dynamic_eval`
+and `sink/dynamic_exec`. Nothing in hairpin matches on rule IDs, but a
+dashboard or alert filtering on the old names will stop matching.
