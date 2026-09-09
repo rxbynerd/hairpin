@@ -209,11 +209,13 @@ haybale. Runs then submit with
 Both ConfigMaps are replaced wholesale, so re-run this after
 `haybale.sh` re-applies the manifest.
 
-`git-smoke-test` needs a harness image built from stirrup's
-`fix/lowercase-proxy-env` branch until that change is published: a
-clone through the egress proxy otherwise hangs on the proxy
-environment variables' spelling — see [Sandbox
-egress](#sandbox-egress-and-the-allowlist-proxy).
+`git-smoke-test` needs a harness image carrying [stirrup PR
+#592](https://github.com/rxbynerd/stirrup/pull/592), without which a
+clone through the egress proxy hangs on the proxy environment
+variables' spelling — see [Sandbox
+egress](#sandbox-egress-and-the-allowlist-proxy). Any
+`ghcr.io/rxbynerd/stirrup:latest` built from stirrup main after
+2026-09-08 has it.
 
 For a real-model run, `just openrouter <op-ref>` /
 [`scripts/dev/openrouter.sh`](../scripts/dev/openrouter.sh) reads an
@@ -498,13 +500,29 @@ the proxy's address is a profile-level decision, not a server flag.
 with the proxy URL above, as do the profiles `scripts/dev/haybale.sh`
 and `scripts/dev/provider.sh` generate.
 
-One upstream caveat applies to git specifically: stirrup's executors
-inject only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`,
-while git (through libcurl) honours only lowercase `http_proxy` for
-plain-http URLs. Git through a plain-HTTP haybale therefore hangs until
-stirrup ships the lowercase variants (branch
-`fix/lowercase-proxy-env`); until then the harness image must be built
-from that branch.
+Git needs a recent harness image here. stirrup's executors once
+injected only the uppercase `HTTP_PROXY`, `HTTPS_PROXY`, and
+`NO_PROXY`, while git (through libcurl) honours only lowercase
+`http_proxy` for plain-http URLs, so a clone through a plain-HTTP
+haybale hung until the tool timeout. [stirrup PR
+#592](https://github.com/rxbynerd/stirrup/pull/592) added the
+lowercase names and merged on 2026-09-09; an image built from stirrup
+main after 2026-09-08 carries it, and no branch build or
+`--harness-image` override is needed any more.
+
+stirrup republishes `:latest` from each main commit whose CI passes,
+so `:latest` lags main whenever main is red. To confirm which commit
+an image is:
+
+```sh
+podman image inspect ghcr.io/rxbynerd/stirrup:latest \
+  --format '{{index .Labels "org.opencontainers.image.revision"}}'
+```
+
+Check that revision contains the fix (`git -C <stirrup checkout>
+merge-base --is-ancestor <#592 merge commit> <revision>`), or pin the
+Deployment's `-harness-image` to the `sha-<short>` tag of a commit
+known to.
 
 ### Deploying haybale
 
